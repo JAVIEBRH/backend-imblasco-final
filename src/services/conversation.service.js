@@ -936,6 +936,8 @@ export async function processMessageWithAI(userId, message, conversationHistory 
       const quickExtractedTerm = extractProductTerm(message)
       const isAmbiguousQuery = !providedExplicitSku && !providedExplicitId && (!quickExtractedTerm || quickExtractedTerm.length === 0)
       
+      console.log(`[WooCommerce] 🔍 Análisis de consulta: término extraído="${quickExtractedTerm}", esAmbiguo=${isAmbiguousQuery}, tieneSKU=${!!providedExplicitSku}, tieneID=${!!providedExplicitId}`)
+      
         // Si es una consulta ambigua, verificar si hay contexto de productos anteriores
         if (isAmbiguousQuery) {
           // Verificar si hay un producto en el contexto de la sesión
@@ -1491,29 +1493,53 @@ export async function processMessageWithAI(userId, message, conversationHistory 
         console.log(`[WooCommerce] ✅ Producto encontrado por referencia explícita, omitiendo búsqueda adicional`)
       } // Cierra el if (!productStockData) de la línea 1120
       
-      // Fallback adicional: si todavía no hay resultados, usar búsqueda nativa de WooCommerce
+      // Fallback adicional: SOLO usar si hay un término muy específico y claro
+      // Preferimos pedir más información antes que devolver productos erróneos
       if (!productStockData && (!productSearchResults.length && !(context.productSearchResults?.length))) {
-        const fallbackTerm = normalizeSearchText(message) || message
-        try {
-          const wpFallbackResults = await wordpressService.searchProductsInWordPress(fallbackTerm, 10)
-          if (wpFallbackResults?.length) {
-            // Si hay un solo resultado del fallback, tratarlo como producto encontrado (productStockData)
-            if (wpFallbackResults.length === 1) {
-              productStockData = wpFallbackResults[0]
-              context.productStockData = productStockData
-              session.currentProduct = wpFallbackResults[0] // Guardar para futuras referencias
-              console.log(`[WooCommerce] ✅ Fallback WP search: producto único encontrado - ${productStockData.name} (SKU: ${productStockData.sku || 'N/A'}, Precio: ${productStockData.price ? '$' + productStockData.price : 'N/A'})`)
+        const fallbackTerm = extractProductTerm(message)
+        
+        // Solo usar fallback si:
+        // 1. Hay un término extraído válido (más de 3 caracteres)
+        // 2. El término no es genérico (no está en lista de términos genéricos)
+        const genericTerms = ['producto', 'articulo', 'item', 'cosa', 'objeto', 'artículo']
+        const isGenericTerm = genericTerms.includes(fallbackTerm.toLowerCase())
+        const hasValidTerm = fallbackTerm && fallbackTerm.length >= 3 && !isGenericTerm
+        
+        if (hasValidTerm) {
+          console.log(`[WooCommerce] 🔍 Fallback usando término específico: "${fallbackTerm}"`)
+          try {
+            const wpFallbackResults = await wordpressService.searchProductsInWordPress(fallbackTerm, 10)
+            if (wpFallbackResults?.length) {
+              // Solo aceptar resultados del fallback si hay un término muy específico
+              // Si hay múltiples resultados, listarlos pero pedir confirmación
+              if (wpFallbackResults.length === 1) {
+                // Un solo resultado: verificar que el nombre contenga el término buscado
+                const productName = normalizeSearchText(wpFallbackResults[0].name || '')
+                const searchTerm = normalizeSearchText(fallbackTerm)
+                if (productName.includes(searchTerm) || searchTerm.length >= 5) {
+                  // Solo aceptar si el nombre contiene el término o el término es largo (más específico)
+                  productStockData = wpFallbackResults[0]
+                  context.productStockData = productStockData
+                  session.currentProduct = wpFallbackResults[0]
+                  console.log(`[WooCommerce] ✅ Fallback WP search: producto único y relevante encontrado - ${productStockData.name}`)
+                } else {
+                  console.log(`[WooCommerce] ⚠️ Fallback encontró producto pero no es relevante, se pedirá más información`)
+                }
+              } else {
+                // Múltiples resultados: listarlos pero marcar que se necesita confirmación
+                productSearchResults = wpFallbackResults
+                context.productSearchResults = wpFallbackResults
+                context.needsConfirmation = true // Marcar que necesita confirmación del cliente
+                console.log(`[WooCommerce] ⚠️ Fallback encontró ${wpFallbackResults.length} productos, se pedirá confirmación`)
+              }
             } else {
-              // Múltiples resultados, agregarlos a productSearchResults
-              productSearchResults = wpFallbackResults
-              context.productSearchResults = wpFallbackResults
-              console.log(`[WooCommerce] ✅ Fallback WP search (final): ${wpFallbackResults.length} productos para "${fallbackTerm}"`)
+              console.log(`[WooCommerce] ⚠️ Fallback WP search sin resultados para "${fallbackTerm}"`)
             }
-          } else {
-            console.log(`[WooCommerce] ⚠️ Fallback WP search (final) sin resultados para "${fallbackTerm}"`)
+          } catch (fallbackError) {
+            console.error(`[WooCommerce] ❌ Error en fallback WP search:`, fallbackError.message)
           }
-        } catch (fallbackError) {
-          console.error(`[WooCommerce] ❌ Error en fallback WP search (final):`, fallbackError.message)
+        } else {
+          console.log(`[WooCommerce] ⚠️ Término no suficientemente específico para fallback (término: "${fallbackTerm}"), se pedirá más información al cliente`)
         }
       }
       } // Cierra el else de "si ya tenemos producto del contexto, omitir búsquedas"
@@ -1598,6 +1624,16 @@ Responde de forma breve (máximo 3-4 líneas), profesional y cercana, estilo Wha
           variationsInfo = `\n\nVARIACIONES DISPONIBLES (${context.productVariations.length} total${context.productVariations.length > 5 ? ', mostrando 5' : ''}):\n${variationsList}`
         }
         
+        // Determinar método de búsqueda y nivel de confianza
+        const searchMethod = providedExplicitSku ? 'SKU exacto' : providedExplicitId ? 'ID exacto' : 'búsqueda por nombre'
+        const confidenceLevel = providedExplicitSku || providedExplicitId ? 'ALTA (identificación exacta)' : 'MEDIA (coincidencia por nombre)'
+        
+        // Obtener historial reciente para contexto
+        const recentHistory = session.history?.slice(-4) || []
+        const historyContext = recentHistory.length > 0 
+          ? `\n\nCONTEXTO DE CONVERSACIÓN RECIENTE:\n${recentHistory.map(msg => `- ${msg.sender === 'user' ? 'Cliente' : 'Bot'}: ${(msg.message || msg.text || '').substring(0, 100)}`).join('\n')}`
+          : ''
+        
         textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
 
 INFORMACIÓN REAL DEL PRODUCTO (consultada desde WooCommerce en tiempo real):
@@ -1606,7 +1642,17 @@ ${productStockData.sku ? `- SKU: ${productStockData.sku}` : ''}
 - Stock: ${stockInfo}
 - Precio: ${priceInfo}${parentInfo}${variationsInfo}
 
-El cliente preguntó: "${message}"
+MÉTODO DE BÚSQUEDA: ${searchMethod}
+NIVEL DE CONFIANZA: ${confidenceLevel}
+
+El cliente preguntó: "${message}"${historyContext}
+
+VALIDACIONES OBLIGATORIAS ANTES DE RESPONDER:
+1. Verifica que el nombre del producto mencionado en tu respuesta coincida EXACTAMENTE con "${productStockData.name}"
+2. Verifica que el SKU mencionado sea "${productStockData.sku || 'N/A'}" (si existe)
+3. Verifica que el stock mencionado sea "${stockInfo}"
+4. Verifica que el precio mencionado sea "${priceInfo}"
+5. Si algún dato no coincide, NO lo uses y marca "N/A" o "no disponible"
 
 INSTRUCCIONES OBLIGATORIAS - FORMATO EXACTO:
 Responde EXACTAMENTE en este formato, con saltos de línea entre cada elemento:
@@ -1624,30 +1670,65 @@ IMPORTANTE:
 - ${variationsInfo ? 'Si hay variaciones, listarlas con formato: "Variaciones disponibles: [lista con SKU, stock y precio de cada una]"\n- ' : ''}Usa el formato exacto mostrado arriba
 - NO ofrezcas reservar ni agregar al carrito (esas funciones no están disponibles)
 - NO digas "estoy verificando" - ya tienes la información real del producto
-- NO inventes información que no esté arriba`
+- NO inventes información que no esté arriba
+- NO cambies nombres, SKUs, precios ni stock - usa EXACTAMENTE los valores proporcionados`
         
       } else if ((productSearchResults && productSearchResults.length > 0) || (context.productSearchResults && context.productSearchResults.length > 0)) {
         // Usar context.productSearchResults si está disponible, sino usar la variable local
         const finalSearchResults = context.productSearchResults || productSearchResults || []
-        // Se encontraron varios productos, mencionar el primero o lista
-        const productsList = finalSearchResults.slice(0, 3).map(p => 
-          `- ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''}${p.price ? ` - $${p.price.toLocaleString('es-CL')}` : ''}`
-        ).join('\n')
         
-        textoParaIA = `Redacta una respuesta clara y formal en español chileno informando al cliente sobre los productos encontrados.
+        // Si necesita confirmación (resultados del fallback genérico), pedir más información
+        if (context.needsConfirmation) {
+          textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
 
-PRODUCTOS ENCONTRADOS (información real de WooCommerce):
-${productsList}
-
+SITUACIÓN:
 El cliente preguntó: "${message}"
+Encontré varios productos que podrían coincidir, pero necesito más información para asegurarme de darte la respuesta correcta.
 
 INSTRUCCIONES OBLIGATORIAS:
-- Menciona que encontraste ${productSearchResults.length} producto(s) relacionado(s)
-- Lista los productos con su nombre, precio (si está disponible) y SKU
-- Indica cuáles tienen stock disponible
-- Responde máximo 3-4 líneas, profesional, estilo WhatsApp
-- Si el cliente pregunta por un producto específico, ofrécete a buscar más detalles por SKU o nombre exacto
-- NO inventes información que no esté en la lista arriba`
+- Pide amablemente más información específica (SKU, modelo, nombre completo del producto)
+- Explica que prefieres confirmar antes de dar información incorrecta
+- Sé profesional y cercano, estilo WhatsApp
+- NO listes productos genéricos
+- NO inventes información`
+        } else {
+          // Resultados del matching determinístico: son confiables, listarlos
+          const productsList = finalSearchResults.slice(0, 5).map((p, index) => {
+            const stockInfo = p.stock_quantity !== null && p.stock_quantity !== undefined
+              ? `${p.stock_quantity} unidad${p.stock_quantity !== 1 ? 'es' : ''}`
+              : p.stock_status === 'instock' ? 'disponible' : 'sin stock'
+            return `${index + 1}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''}${p.price ? ` - $${p.price.toLocaleString('es-CL')}` : ''} - Stock: ${stockInfo}`
+          }).join('\n')
+          
+          // Obtener historial reciente para contexto
+          const recentHistory = session.history?.slice(-4) || []
+          const historyContext = recentHistory.length > 0 
+            ? `\n\nCONTEXTO DE CONVERSACIÓN RECIENTE:\n${recentHistory.map(msg => `- ${msg.sender === 'user' ? 'Cliente' : 'Bot'}: ${(msg.message || msg.text || '').substring(0, 100)}`).join('\n')}`
+            : ''
+          
+          textoParaIA = `Redacta una respuesta clara y formal en español chileno informando al cliente sobre los productos encontrados.
+
+PRODUCTOS ENCONTRADOS (información real de WooCommerce, matching determinístico - alta confianza):
+${productsList}
+${finalSearchResults.length > 5 ? `\n(Total: ${finalSearchResults.length} productos encontrados, mostrando los 5 más relevantes)` : ''}
+
+El cliente preguntó: "${message}"${historyContext}
+
+VALIDACIONES OBLIGATORIAS ANTES DE RESPONDER:
+1. Verifica que solo menciones productos de la lista arriba
+2. Verifica que los nombres, SKUs y precios coincidan EXACTAMENTE con los de la lista
+3. NO agregues productos que no estén en la lista
+4. NO inventes información adicional
+
+INSTRUCCIONES OBLIGATORIAS:
+- Menciona que encontraste ${finalSearchResults.length} producto(s) relacionado(s) con "${message}"
+- Lista los productos en el orden mostrado arriba (1, 2, 3...)
+- Para cada producto, incluye: nombre, SKU (si existe), precio (si existe) y stock
+- Pide al cliente que confirme cuál es el producto que busca (por número, SKU o nombre exacto)
+- Responde máximo 4-5 líneas, profesional, estilo WhatsApp
+- NO inventes información que no esté en la lista arriba
+- NO cambies nombres, SKUs, precios ni stock - usa EXACTAMENTE los valores proporcionados`
+        }
         
       } else {
         // No se encontró información del producto
@@ -1672,37 +1753,68 @@ INSTRUCCIONES OBLIGATORIAS:
 - NO digas "estoy verificando" - ya se verificó exhaustivamente y no se encontró
 - NO digas "te respondo enseguida" - ya se verificó
 - Sé empático y útil`
-      } else {
-        // No se encontró información del producto y no había referencia explícita
-        // Si hay resultados de búsqueda parcial, usarlos; si no, pedir más información
-        const finalSearchResults = context.productSearchResults || productSearchResults || []
-        if (finalSearchResults.length > 0) {
-          // Hay resultados parciales, listarlos
-          const productsList = finalSearchResults.slice(0, 5).map(p => {
-            const stockInfo = p.stock_quantity !== null && p.stock_quantity !== undefined
-              ? `${p.stock_quantity} unidad${p.stock_quantity !== 1 ? 'es' : ''}`
-              : p.stock_status === 'instock' ? 'disponible' : 'sin stock'
-            const priceInfo = p.price ? `$${parseFloat(p.price).toLocaleString('es-CL')}` : 'Precio no disponible'
-            return `- ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''} - ${stockInfo} - ${priceInfo}`
-          }).join('\n')
-          
-          textoParaIA = `Redacta una respuesta clara y profesional en español chileno informando al cliente sobre los productos encontrados.
+        } else {
+          // No se encontró información del producto y no había referencia explícita
+          // Si hay resultados de búsqueda parcial, verificar si necesitan confirmación
+          const finalSearchResults = context.productSearchResults || productSearchResults || []
+          if (finalSearchResults.length > 0) {
+            // Si necesita confirmación (resultados del fallback genérico), pedir más información
+            if (context.needsConfirmation) {
+              textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
 
-PRODUCTOS ENCONTRADOS relacionados con "${message}" (información real de WooCommerce):
+SITUACIÓN:
+El cliente preguntó: "${message}"
+Encontré algunos productos que podrían coincidir, pero necesito más información para asegurarme de darte la respuesta correcta.
+
+INSTRUCCIONES OBLIGATORIAS:
+- Pide amablemente más información específica (SKU, modelo, nombre completo del producto)
+- Explica que prefieres confirmar antes de dar información incorrecta
+- Sé profesional y cercano, estilo WhatsApp
+- NO listes productos genéricos o que no estés seguro
+- NO inventes información`
+            } else {
+              // Resultados del matching determinístico: son confiables, listarlos
+              const productsList = finalSearchResults.slice(0, 5).map((p, index) => {
+                const stockInfo = p.stock_quantity !== null && p.stock_quantity !== undefined
+                  ? `${p.stock_quantity} unidad${p.stock_quantity !== 1 ? 'es' : ''}`
+                  : p.stock_status === 'instock' ? 'disponible' : 'sin stock'
+                const priceInfo = p.price ? `$${parseFloat(p.price).toLocaleString('es-CL')}` : 'Precio no disponible'
+                return `${index + 1}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''} - Stock: ${stockInfo} - Precio: ${priceInfo}`
+              }).join('\n')
+              
+              // Obtener historial reciente para contexto
+              const recentHistory = session.history?.slice(-4) || []
+              const historyContext = recentHistory.length > 0 
+                ? `\n\nCONTEXTO DE CONVERSACIÓN RECIENTE:\n${recentHistory.map(msg => `- ${msg.sender === 'user' ? 'Cliente' : 'Bot'}: ${(msg.message || msg.text || '').substring(0, 100)}`).join('\n')}`
+                : ''
+              
+              textoParaIA = `Redacta una respuesta clara y profesional en español chileno informando al cliente sobre los productos encontrados.
+
+PRODUCTOS ENCONTRADOS relacionados con "${message}" (información real de WooCommerce, matching determinístico - alta confianza):
 ${productsList}
 ${finalSearchResults.length > 5 ? `\n(Total: ${finalSearchResults.length} productos encontrados, mostrando los 5 más relevantes)` : ''}
 
-El cliente preguntó: "${message}"
+El cliente preguntó: "${message}"${historyContext}
+
+VALIDACIONES OBLIGATORIAS ANTES DE RESPONDER:
+1. Verifica que solo menciones productos de la lista arriba (numerados 1, 2, 3...)
+2. Verifica que los nombres, SKUs, stocks y precios coincidan EXACTAMENTE con los de la lista
+3. NO agregues productos que no estén en la lista
+4. NO inventes información adicional
 
 INSTRUCCIONES OBLIGATORIAS:
 - Menciona que encontraste ${finalSearchResults.length} producto(s) relacionado(s) con "${message}"
-- Lista los productos encontrados con su nombre, SKU (si está disponible), stock y precio
+- Lista los productos en el orden mostrado arriba (1, 2, 3...)
+- Para cada producto, incluye: nombre, SKU (si existe), stock y precio
 - Indica cuáles tienen stock disponible
 - Si hay más de 5 productos, menciona que hay más opciones disponibles
+- Pide al cliente que confirme cuál es el producto que busca (por número, SKU o nombre exacto)
 - Responde máximo 4-5 líneas, profesional, estilo WhatsApp
 - Ofrece ayuda para buscar un producto más específico si el cliente necesita más detalles
 - NO digas "estoy verificando" - ya tienes la información real de los productos
-- NO inventes información que no esté en la lista arriba`
+- NO inventes información que no esté en la lista arriba
+- NO cambies nombres, SKUs, precios ni stock - usa EXACTAMENTE los valores proporcionados`
+            }
         } else {
           // No se encontró nada, pedir más información
           textoParaIA = `Redacta una respuesta clara y profesional en español chileno informando al cliente.
