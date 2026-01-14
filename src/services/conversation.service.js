@@ -1014,7 +1014,30 @@ export async function processMessageWithAI(userId, message, conversationHistory 
             console.log(`   Stock: ${productBySku.stock_quantity !== null ? productBySku.stock_quantity : 'N/A'}, Precio: ${productBySku.price ? '$' + productBySku.price : 'N/A'}`)
           } else {
             console.log(`[WooCommerce] ❌ No se encontró producto con SKU explícito: "${providedExplicitSku}"`)
-            console.log(`   Se omite búsqueda masiva en variaciones para evitar demoras; solicitar SKU/nombre más específico si es necesario.`)
+            console.log(`   Se omite búsqueda masiva en variaciones para evitar demoras; se intentará localizar por nombre con el código proporcionado.`)
+            try {
+              const allProducts = await wordpressService.getAllProducts()
+              const normalizedSku = normalizeCode(providedExplicitSku)
+              const productsWithCode = allProducts.filter(p => {
+                const productName = normalizeCode(p.name || '')
+                const productSku = normalizeCode(p.sku || '')
+                return productName.includes(normalizedSku) || productSku.includes(normalizedSku)
+              })
+              
+              if (productsWithCode.length === 1) {
+                productStockData = productsWithCode[0]
+                context.productStockData = productStockData
+                console.log(`[WooCommerce] ✅ Producto encontrado por código en nombre/SKU: ${productStockData.name} (SKU real: ${productStockData.sku || 'N/A'})`)
+              } else if (productsWithCode.length > 1) {
+                productSearchResults = productsWithCode.slice(0, 10) // limitar para no saturar respuestas
+                context.productSearchResults = productSearchResults
+                console.log(`[WooCommerce] ✅ Encontrados ${productsWithCode.length} productos que contienen "${providedExplicitSku}" en nombre/SKU`)
+              } else {
+                console.log(`[WooCommerce] ❌ Tampoco se encontró "${providedExplicitSku}" en nombres/SKU normalizados`)
+              }
+            } catch (error) {
+              console.log(`[WooCommerce] ⚠️  Error buscando código en nombres/SKU: ${error.message}`)
+            }
           }
         } catch (error) {
           console.error(`[WooCommerce] ❌ Error buscando por SKU explícito "${providedExplicitSku}":`, error.message)
