@@ -30,25 +30,43 @@ const envResult = dotenv.config({
   override: false, // No sobrescribir variables de entorno existentes
 });
 
-if (envResult.error && process.env.NODE_ENV !== 'production') {
-  console.warn("⚠️  Archivo .env no encontrado (esto es normal en producción):", envPath);
+if (envResult.error && process.env.NODE_ENV !== "production") {
+  console.warn(
+    "⚠️  Archivo .env no encontrado (esto es normal en producción):",
+    envPath
+  );
 } else if (!envResult.error) {
   console.log("✅ Archivo .env cargado desde:", envPath);
 }
 
 // En producción, las variables vienen de Render directamente
-if (process.env.NODE_ENV === 'production') {
+if (process.env.NODE_ENV === "production") {
   console.log("🔧 Modo producción: usando variables de entorno de Render");
 }
 
 // Debug: Mostrar variables de entorno disponibles (sin valores sensibles)
 console.log("🔍 Variables de entorno disponibles:");
 console.log("  NODE_ENV:", process.env.NODE_ENV || "no definido");
-console.log("  DB_HOST:", process.env.DB_HOST ? "✅ definido" : "❌ no definido");
-console.log("  DB_NAME:", process.env.DB_NAME ? "✅ definido" : "❌ no definido");
-console.log("  DB_USER:", process.env.DB_USER ? "✅ definido" : "❌ no definido");
-console.log("  DB_PASSWORD:", process.env.DB_PASSWORD ? "✅ definido" : "❌ no definido");
-console.log("  OPENAI_API_KEY:", process.env.OPENAI_API_KEY ? "✅ definido" : "❌ no definido");
+console.log(
+  "  DB_HOST:",
+  process.env.DB_HOST ? "✅ definido" : "❌ no definido"
+);
+console.log(
+  "  DB_NAME:",
+  process.env.DB_NAME ? "✅ definido" : "❌ no definido"
+);
+console.log(
+  "  DB_USER:",
+  process.env.DB_USER ? "✅ definido" : "❌ no definido"
+);
+console.log(
+  "  DB_PASSWORD:",
+  process.env.DB_PASSWORD ? "✅ definido" : "❌ no definido"
+);
+console.log(
+  "  OPENAI_API_KEY:",
+  process.env.OPENAI_API_KEY ? "✅ definido" : "❌ no definido"
+);
 
 // Verificar que OPENAI_API_KEY esté cargada
 const apiKey = process.env.OPENAI_API_KEY?.trim();
@@ -92,9 +110,9 @@ const PORT = process.env.PORT || 3001;
 app.use(
   cors({
     origin: [
-      "http://localhost:3000", 
+      "http://localhost:3000",
       "http://localhost:5173",
-      "https://imblascoasistentefrontend.onrender.com"
+      "https://imblascoasistentefrontend.onrender.com",
     ],
     credentials: true,
   })

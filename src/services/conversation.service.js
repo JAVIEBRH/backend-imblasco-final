@@ -50,6 +50,171 @@ export const ACTIONS = {
 }
 
 /**
+ * Normalizar texto para búsqueda (caracteres especiales, espacios, códigos)
+ * @param {string} text - Texto a normalizar
+ * @returns {string} - Texto normalizado
+ */
+function normalizeSearchText(text) {
+  if (!text || typeof text !== 'string') return ''
+  
+  return text
+    .toLowerCase()
+    .normalize('NFD')                       // Descomponer caracteres Unicode (á -> a + ´)
+    .replace(/[\u0300-\u036f]/g, '')       // Eliminar diacríticos (tildes, acentos)
+    // Normalizar caracteres especiales a espacios
+    .replace(/[-_.,;:()\[\]{}'"!?¡¿]/g, ' ')   // Guiones, puntos, paréntesis, comillas, signos → espacio
+    // Normalizar espacios múltiples a uno solo
+    .replace(/\s+/g, ' ')                  // Múltiples espacios → un solo espacio
+    .trim()
+}
+
+/**
+ * Normalizar códigos/SKU (N35 = N-35 = N 35 = N.35)
+ * @param {string} code - Código/SKU a normalizar
+ * @returns {string} - Código normalizado
+ */
+function normalizeCode(code) {
+  if (!code || typeof code !== 'string') return ''
+  
+  return code
+    .toUpperCase()
+    .replace(/[-.\s_]/g, '')               // Eliminar guiones, puntos, espacios, guiones bajos
+    .trim()
+}
+
+/**
+ * Convertir plural a singular en español (robusto y general)
+ * @param {string} word - Palabra en plural
+ * @returns {string} - Palabra en singular
+ */
+function pluralToSingular(word) {
+  if (!word || word.length < 3) return word
+  
+  const lowerWord = word.toLowerCase()
+  
+  // Casos especiales con cambio de consonante: terminan en -es
+  if (lowerWord.endsWith('es') && word.length > 4) {
+    // Cambio c → z: lápices -> lápiz, peces -> pez, luces -> luz
+    if (lowerWord.endsWith('ices')) {
+      return word.slice(0, -4) + 'iz' // lapices -> lapiz, peces -> pez
+    }
+    // Cambio z → c: veces -> vez (menos común)
+    if (lowerWord.endsWith('ezes')) {
+      return word.slice(0, -3) + 'z' // veces -> vez
+    }
+    // Terminaciones -ones: cartones -> cartón, leones -> león
+    if (lowerWord.endsWith('ones')) {
+      return word.slice(0, -2) // cartones -> carton, leones -> leon
+    }
+    // Terminaciones -anes: panes -> pan, planes -> plan
+    if (lowerWord.endsWith('anes')) {
+      return word.slice(0, -2) // panes -> pan
+    }
+    // Terminaciones -enes: frenes -> fren (menos común)
+    if (lowerWord.endsWith('enes')) {
+      return word.slice(0, -2) // frenes -> fren
+    }
+    // Terminaciones -eras: corcheteras -> corchetera
+    if (lowerWord.endsWith('eras')) {
+      return word.slice(0, -1) // corcheteras -> corchetera
+    }
+    // Terminaciones -ilas: mochilas -> mochila
+    if (lowerWord.endsWith('ilas')) {
+      return word.slice(0, -1) // mochilas -> mochila
+    }
+    // Terminaciones -ores: colores -> color, sabores -> sabor
+    if (lowerWord.endsWith('ores')) {
+      return word.slice(0, -2) // colores -> color
+    }
+    // General para palabras que terminan en -es: quitar "es"
+    return word.slice(0, -2)
+  }
+  
+  // Palabras que terminan solo en -s (no -es)
+  if (lowerWord.endsWith('s') && !lowerWord.endsWith('es') && word.length > 3) {
+    // Terminaciones -as: mesas -> mesa, casas -> casa, libretas -> libreta
+    if (lowerWord.endsWith('as')) {
+      return word.slice(0, -1) // mesas -> mesa
+    }
+    // Terminaciones -os: libros -> libro, cuadernos -> cuaderno, boligrafos -> boligrafo
+    if (lowerWord.endsWith('os')) {
+      return word.slice(0, -1) // libros -> libro
+    }
+    // Terminaciones -is: lapices -> lapiz (ya cubierto arriba, pero por si acaso)
+    if (lowerWord.endsWith('is')) {
+      return word.slice(0, -1) // lapices -> lapiz (aunque normalmente es lapices)
+    }
+    // General: quitar "s"
+    return word.slice(0, -1)
+  }
+  
+  return word
+}
+
+/**
+ * Convertir singular a plural en español (para generar variaciones)
+ * @param {string} word - Palabra en singular
+ * @returns {string} - Palabra en plural
+ */
+function singularToPlural(word) {
+  if (!word || word.length < 2) return word
+  
+  const lowerWord = word.toLowerCase()
+  
+  // Casos especiales con cambio de consonante
+  // Cambio z → c: lápiz -> lápices, pez -> peces, luz -> luces
+  if (lowerWord.endsWith('iz')) {
+    return word.slice(0, -2) + 'ices' // lapiz -> lapices, pez -> peces
+  }
+  if (lowerWord.endsWith('z') && !lowerWord.endsWith('iz')) {
+    return word.slice(0, -1) + 'ces' // luz -> luces, cruz -> cruces
+  }
+  
+  // Terminaciones -ón: cartón -> cartones, león -> leones
+  if (lowerWord.endsWith('on')) {
+    return word + 'es' // carton -> cartones
+  }
+  
+  // Terminaciones -an: pan -> panes, plan -> planes
+  if (lowerWord.endsWith('an')) {
+    return word + 'es' // pan -> panes
+  }
+  
+  // Terminaciones -en: fren -> frenes (menos común)
+  if (lowerWord.endsWith('en')) {
+    return word + 'es' // fren -> frenes
+  }
+  
+  // Terminaciones -or: color -> colores, sabor -> sabores
+  if (lowerWord.endsWith('or')) {
+    return word + 'es' // color -> colores
+  }
+  
+  // Terminaciones -a: mesa -> mesas, casa -> casas, libreta -> libretas
+  if (lowerWord.endsWith('a')) {
+    return word + 's' // mesa -> mesas
+  }
+  
+  // Terminaciones -o: libro -> libros, cuaderno -> cuadernos
+  if (lowerWord.endsWith('o')) {
+    return word + 's' // libro -> libros
+  }
+  
+  // Terminaciones -e: clase -> clases, corte -> cortes
+  if (lowerWord.endsWith('e')) {
+    return word + 's' // clase -> clases
+  }
+  
+  // Terminaciones -i o -u: menú -> menús (mantener tilde si existe, pero ya está normalizado)
+  if (lowerWord.endsWith('i') || lowerWord.endsWith('u')) {
+    return word + 's' // menu -> menus
+  }
+  
+  // General: agregar "s"
+  return word + 's'
+}
+
+/**
  * Extraer término del producto del mensaje (sin stop words, sin prefijos)
  * @param {string} message - Mensaje del usuario
  * @returns {string} - Término del producto extraído
@@ -59,10 +224,11 @@ function extractProductTerm(message) {
   const stopWords = [
     'hay', 'stock', 'del', 'de', 'producto', 'product', 'tienes', 'tiene', 
     'cuanto', 'cuánto', 'cuántas', 'cuántos', 'precio', 'cuesta', 'vale', 
-    'que', 'unidades', 'disponible', 'tienen', 'el', 'la', 'los', 'las', 
+    'que', 'unidades', 'disponible', 'disponibles', 'tienen', 'el', 'la', 'los', 'las', 
     'hola', 'busco', 'buscando', 'llamado', 'llamada', 'nombre', 'articulo', 
     'artículo', 'un', 'una', 'estoy', 'en', 'con', 'por', 'para', 'sobre',
-    'desde', 'hasta', 'entre', 'durante', 'según', 'mediante', 'sin', 'bajo'
+    'desde', 'hasta', 'entre', 'durante', 'según', 'mediante', 'sin', 'bajo',
+    'tiene', 'tienen', 'hay', 'existe', 'existen', 'tengas', 'tengamos'
   ]
   
   // Remover prefijos comunes y patrones específicos
@@ -77,10 +243,11 @@ function extractProductTerm(message) {
     .replace(/^de\s+/gi, '') // Remover "de" al inicio
     .trim()
   
-  // Convertir a minúsculas y limpiar
-  let result = cleaned
-    .toLowerCase()
-    .replace(/[¿?¡!.,:;]/g, ' ')
+  // Normalizar texto (caracteres especiales, espacios múltiples)
+  let normalized = normalizeSearchText(cleaned)
+  
+  // Dividir en palabras y filtrar
+  let result = normalized
     .split(/\s+/)
     .filter(word => {
       // Mantener palabras que:
@@ -89,6 +256,7 @@ function extractProductTerm(message) {
       // 3. No son solo números (a menos que sean parte de un SKU)
       return word.length > 1 && !stopWords.includes(word.toLowerCase())
     })
+    .map(word => pluralToSingular(word)) // Convertir plurales a singulares
     .join(' ')
     .trim()
   
@@ -834,6 +1002,10 @@ export async function processMessageWithAI(userId, message, conversationHistory 
       // Buscar por SKU primero
       if (providedExplicitSku) {
         try {
+          // Normalizar el SKU proporcionado (N35 = N-35 = N 35)
+          const normalizedSku = normalizeCode(providedExplicitSku)
+          console.log(`[WooCommerce] SKU original: "${providedExplicitSku}" → normalizado: "${normalizedSku}"`)
+          
           const productBySku = await wordpressService.getProductBySku(providedExplicitSku)
           if (productBySku) {
             productStockData = productBySku
@@ -842,7 +1014,81 @@ export async function processMessageWithAI(userId, message, conversationHistory 
             console.log(`   Stock: ${productBySku.stock_quantity !== null ? productBySku.stock_quantity : 'N/A'}, Precio: ${productBySku.price ? '$' + productBySku.price : 'N/A'}`)
           } else {
             console.log(`[WooCommerce] ❌ No se encontró producto con SKU explícito: "${providedExplicitSku}"`)
-            console.log(`   Intentando buscar por ID si está disponible...`)
+            console.log(`   Intentando buscar en variaciones de productos variables...`)
+            
+            // Si no se encuentra en productos simples, buscar en variaciones de productos variables
+            try {
+              const allProducts = await wordpressService.getAllProducts()
+              const variableProducts = allProducts.filter(p => p.type === 'variable')
+              
+              if (variableProducts.length > 0) {
+                console.log(`[WooCommerce] Buscando SKU "${providedExplicitSku}" en ${variableProducts.length} productos variables...`)
+                const variation = await wordpressService.findVariationBySku(providedExplicitSku, variableProducts)
+                
+                if (variation) {
+                  // Encontramos una variación - usar esa como producto encontrado
+                  productStockData = {
+                    id: variation.id,
+                    name: variation.name || variation.parent_product?.name || 'Variación',
+                    sku: variation.sku,
+                    price: variation.price,
+                    stock_quantity: variation.stock_quantity,
+                    stock_status: variation.stock_status,
+                    manage_stock: variation.manage_stock,
+                    available: variation.available,
+                    is_variation: true,
+                    parent_product: variation.parent_product
+                  }
+                  context.productStockData = productStockData
+                  console.log(`[WooCommerce] ✅ Variación encontrada: ${variation.name} (SKU: ${variation.sku}, Producto: ${variation.parent_product?.name})`)
+                } else {
+                  // Si no se encuentra en variaciones, buscar en nombres de productos
+                  console.log(`[WooCommerce] No se encontró en variaciones, buscando en nombres de productos...`)
+                  const productsWithSkuInName = allProducts.filter(p => {
+                    const productName = normalizeCode(p.name || '')
+                    const productSku = normalizeCode(p.sku || '')
+                    return productName.includes(normalizedSku) || productSku.includes(normalizedSku)
+                  })
+                  
+                  if (productsWithSkuInName.length > 0) {
+                    // Si hay un solo producto, usarlo directamente
+                    if (productsWithSkuInName.length === 1) {
+                      productStockData = productsWithSkuInName[0]
+                      context.productStockData = productStockData
+                      console.log(`[WooCommerce] ✅ Producto encontrado por SKU en nombre: ${productStockData.name} (SKU real: ${productStockData.sku})`)
+                    } else {
+                      // Múltiples productos, agregarlos a resultados
+                      productSearchResults = productsWithSkuInName
+                      context.productSearchResults = productSearchResults
+                      console.log(`[WooCommerce] ✅ Encontrados ${productsWithSkuInName.length} productos con "${providedExplicitSku}" en nombre/SKU`)
+                    }
+                  }
+                }
+              } else {
+                // No hay productos variables, buscar solo en nombres
+                console.log(`[WooCommerce] No hay productos variables, buscando en nombres...`)
+                const allProductsForSearch = await wordpressService.getAllProducts()
+                const productsWithSkuInName = allProductsForSearch.filter(p => {
+                  const productName = normalizeCode(p.name || '')
+                  const productSku = normalizeCode(p.sku || '')
+                  return productName.includes(normalizedSku) || productSku.includes(normalizedSku)
+                })
+                
+                if (productsWithSkuInName.length > 0) {
+                  if (productsWithSkuInName.length === 1) {
+                    productStockData = productsWithSkuInName[0]
+                    context.productStockData = productStockData
+                    console.log(`[WooCommerce] ✅ Producto encontrado por SKU en nombre: ${productStockData.name} (SKU real: ${productStockData.sku})`)
+                  } else {
+                    productSearchResults = productsWithSkuInName
+                    context.productSearchResults = productSearchResults
+                    console.log(`[WooCommerce] ✅ Encontrados ${productsWithSkuInName.length} productos con "${providedExplicitSku}" en nombre/SKU`)
+                  }
+                }
+              }
+            } catch (error) {
+              console.log(`[WooCommerce] ⚠️  Error buscando SKU en variaciones/nombres: ${error.message}`)
+            }
           }
         } catch (error) {
           console.error(`[WooCommerce] ❌ Error buscando por SKU explícito "${providedExplicitSku}":`, error.message)
@@ -891,109 +1137,331 @@ export async function processMessageWithAI(userId, message, conversationHistory 
         if (cleanMessage.length > 3) {
           console.log(`[WooCommerce] Buscando por nombre usando matching determinístico`)
           
-          // Detectar si hay un SKU al final del mensaje (ej: "Kit de supervivencia SU01")
-          // Patrón: palabra con letra seguida de números al final
-          const skuAtEndMatch = cleanMessage.match(/\s+([A-Za-z]\d+[A-Za-z]?[-]?\d*)\s*$/i)
-          let detectedSkuFromName = null
-          let messageWithoutSku = cleanMessage
-          
-          if (skuAtEndMatch) {
-            detectedSkuFromName = skuAtEndMatch[1].trim()
-            messageWithoutSku = cleanMessage.replace(/\s+[A-Za-z]\d+[A-Za-z]?[-]?\d*\s*$/i, '').trim()
-            console.log(`[WooCommerce] 🔍 SKU detectado al final del nombre: "${detectedSkuFromName}"`)
+          // PRIMERO: Intentar buscar por nombre completo antes de extraer SKU
+          // Esto asegura que "Soporte Piocha Imán SOPI01" se busque como nombre completo
+          try {
+            const allProducts = await wordpressService.getAllProducts()
             
-            // Intentar buscar por este SKU primero
-            try {
-              const productBySku = await wordpressService.getProductBySku(detectedSkuFromName)
-              if (productBySku) {
-                productStockData = productBySku
+            if (allProducts && allProducts.length > 0) {
+              console.log(`[WooCommerce] ✅ Obtenidos ${allProducts.length} productos de WooCommerce`)
+              
+              // Buscar primero por nombre completo (sin extraer SKU)
+              // Usar normalizeText (sin espacios) para coincidir con matchProduct
+              const fullNameNormalized = productMatcher.normalizeText(cleanMessage)
+              console.log(`[WooCommerce] 🔍 Buscando primero por nombre completo: "${fullNameNormalized}"`)
+              
+              const fullNameMatch = productMatcher.matchProduct(
+                cleanMessage, // Pasar el texto original, matchProduct lo normaliza internamente
+                allProducts,
+                p => p.sku || '',
+                p => p.name || ''
+              )
+              
+              if (fullNameMatch.status === 'FOUND') {
+                productStockData = fullNameMatch.product.originalProduct
+                console.log(`[WooCommerce] ✅ Producto encontrado por nombre completo: ${productStockData.name}`)
+                
+                // Si es un producto variable, consultar sus variaciones (lazy loading)
+                if (productStockData.type === 'variable' && productStockData.id) {
+                  console.log(`[WooCommerce] 🔄 Producto variable detectado, consultando variaciones...`)
+                  try {
+                    const variations = await wordpressService.getProductVariations(productStockData.id)
+                    if (variations && variations.length > 0) {
+                      context.productVariations = variations
+                      console.log(`[WooCommerce] ✅ ${variations.length} variaciones encontradas para "${productStockData.name}"`)
+                    }
+                  } catch (error) {
+                    console.error(`[WooCommerce] ⚠️  Error obteniendo variaciones: ${error.message}`)
+                  }
+                }
+                
                 context.productStockData = productStockData
-                console.log(`[WooCommerce] ✅ Producto encontrado por SKU del nombre: ${productBySku.name} (SKU: ${productBySku.sku})`)
-                console.log(`   Stock: ${productBySku.stock_quantity !== null ? productBySku.stock_quantity : 'N/A'}, Precio: ${productBySku.price ? '$' + productBySku.price : 'N/A'}`)
+              } else if (fullNameMatch.status === 'AMBIGUOUS') {
+                productSearchResults = fullNameMatch.ambiguousProducts.map(m => m.originalProduct)
+                context.productSearchResults = productSearchResults
+                console.log(`[WooCommerce] ⚠️  Múltiples productos con nombre completo (${productSearchResults.length})`)
               }
-            } catch (error) {
-              console.log(`[WooCommerce] ⚠️  No se encontró producto con SKU "${detectedSkuFromName}", continuando con búsqueda por nombre`)
             }
+          } catch (error) {
+            console.error(`[WooCommerce] ❌ Error buscando por nombre completo:`, error.message)
           }
           
-          // Si no se encontró por SKU, buscar por nombre
-          if (!productStockData) {
-            // Extraer término del producto (sin stop words, sin prefijos)
-            const productTerm = extractProductTerm(messageWithoutSku)
-            console.log(`[WooCommerce] Término del producto extraído: "${productTerm}"`)
-          
-            if (productTerm.length > 0) {
-              try {
-                // Obtener muestra de productos de WooCommerce (sin búsqueda fuzzy)
-                console.log(`[WooCommerce] Obteniendo muestra de productos de WooCommerce...`)
-                const allProducts = await wordpressService.getProductsSample(50)
+          // Si no se encontró por nombre completo, detectar SKU y buscar por partes
+          if (!productStockData && !productSearchResults.length) {
+            // Detectar SKU en cualquier parte del mensaje (al inicio, medio o final)
+            // Patrones: 
+            // - Letra seguida de números: "S10", "N35", "L88", "SOPI01"
+            // - Letra-números-letra opcional: "A1B", "X2Y"
+            // - Con guiones: "S-10", "N-35", "S.10", "N 35"
+            // - Al final: "CORCHETERA CAPSULA S10"
+            // - Al inicio: "S10 CORCHETERA"
+            // - En medio: "CORCHETERA S10 CAPSULA"
+            const skuPatterns = [
+              /\b([A-Za-z]\d+[A-Za-z]?[-.\s]?\d*)\b/i,  // Patrón general: letra + números (con guión/punto/espacio opcional)
+              /\b([A-Za-z][-.\s]\d+[A-Za-z]?)\b/i,      // Con guión/punto/espacio: "S-10", "S.10", "S 10"
+              /\b([A-Za-z]\d+[-.\s]\d+)\b/i             // Con guión/punto/espacio en medio: "S10-20", "S10.20", "S10 20"
+            ]
+            
+            let detectedSkuFromName = null
+            let messageWithoutSku = cleanMessage
+            
+            // Intentar cada patrón hasta encontrar un SKU
+            for (const pattern of skuPatterns) {
+              const skuMatch = cleanMessage.match(pattern)
+              if (skuMatch) {
+                detectedSkuFromName = skuMatch[1].trim()
+                // Normalizar el SKU detectado (N-35 → N35, S.10 → S10, etc.)
+                const normalizedDetectedSku = normalizeCode(detectedSkuFromName)
+                console.log(`[WooCommerce] 🔍 SKU detectado en el nombre: "${detectedSkuFromName}" → normalizado: "${normalizedDetectedSku}"`)
                 
-                if (allProducts && allProducts.length > 0) {
-                  console.log(`[WooCommerce] ✅ Obtenidos ${allProducts.length} productos de WooCommerce`)
-                  
-                  // Si el término incluye "hola" u otras palabras de saludo, limpiarlo más agresivamente
-                  let termToUse = productTerm
-                  if (productTerm.includes('hola') || productTerm.includes('busco') || productTerm.includes('buscando') || productTerm.includes('llamado')) {
-                    const cleanedTerm = productTerm
-                      .replace(/\bhola\b/gi, '')
-                      .replace(/\bbusco\b/gi, '')
-                      .replace(/\bbuscando\b/gi, '')
-                      .replace(/\bllamado\b/gi, '')
-                      .replace(/\bun\b/gi, '')
-                      .replace(/\buna\b/gi, '')
-                      .trim()
-                    
-                    if (cleanedTerm.length > 0) {
-                      console.log(`[WooCommerce] Término limpiado adicionalmente: "${cleanedTerm}"`)
-                      termToUse = cleanedTerm
-                    }
-                  }
-                  
-                  // Aplicar matching determinístico sobre el término extraído
-                  const matchResult = productMatcher.matchProduct(
-                    termToUse,                    // ✅ Término del producto (limpio)
-                    allProducts,                    // Muestra de productos de WooCommerce
-                    p => p.sku || '',                // Función para obtener SKU
-                    p => p.name || ''                // Función para obtener nombre
-                  )
-                  
-                  console.log(`[WooCommerce] Resultado del matching determinístico: ${matchResult.status}`)
-                  
-                  if (matchResult.status === 'FOUND') {
-                    // Coincidencia exacta única: usar el producto encontrado
-                    productStockData = matchResult.product.originalProduct
-                    console.log(`[WooCommerce] ✅ Producto encontrado por matching determinístico: ${productStockData.name} (SKU: ${productStockData.sku || 'N/A'})`)
-                    context.productStockData = productStockData
-                    context.productSearchResults = [productStockData]
-                  } else if (matchResult.status === 'AMBIGUOUS') {
-                    // Múltiples coincidencias exactas: listar productos ambiguos
-                    console.log(`[WooCommerce] ⚠️  Múltiples productos con coincidencia exacta (${matchResult.ambiguousProducts.length}), se listarán para confirmación`)
-                    productSearchResults = matchResult.ambiguousProducts.map(m => m.originalProduct)
-                    context.productSearchResults = productSearchResults
-                  } else {
-                    // NOT_FOUND: no hay coincidencia exacta
-                    console.log(`[WooCommerce] ❌ No se encontró coincidencia exacta con término: "${termToUse}"`)
-                  }
+                // Remover el SKU del mensaje para buscar por nombre (usar el original para el reemplazo)
+                messageWithoutSku = cleanMessage.replace(new RegExp(`\\b${detectedSkuFromName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi'), '').trim()
+                console.log(`[WooCommerce] Mensaje sin SKU: "${messageWithoutSku}"`)
+                
+                // Usar el SKU normalizado para la búsqueda
+                detectedSkuFromName = normalizedDetectedSku
+                break
+              }
+            }
+            
+            // Si se detectó un SKU, intentar buscarlo primero
+            if (detectedSkuFromName) {
+              try {
+                const productBySku = await wordpressService.getProductBySku(detectedSkuFromName)
+                if (productBySku) {
+                  productStockData = productBySku
+                  context.productStockData = productStockData
+                  console.log(`[WooCommerce] ✅ Producto encontrado por SKU del nombre: ${productBySku.name} (SKU: ${productBySku.sku})`)
+                  console.log(`   Stock: ${productBySku.stock_quantity !== null ? productBySku.stock_quantity : 'N/A'}, Precio: ${productBySku.price ? '$' + productBySku.price : 'N/A'}`)
                 } else {
-                  console.log(`[WooCommerce] ⚠️  No se pudieron obtener productos de WooCommerce`)
+                  console.log(`[WooCommerce] ⚠️  No se encontró producto con SKU "${detectedSkuFromName}", continuando con búsqueda por nombre`)
                 }
               } catch (error) {
-                console.error(`[WooCommerce] ❌ Error en matching determinístico:`, error.message)
-                console.error(`   Stack:`, error.stack?.substring(0, 500))
+                console.log(`[WooCommerce] ⚠️  Error buscando SKU "${detectedSkuFromName}": ${error.message}, continuando con búsqueda por nombre`)
               }
-            } else {
-              console.log(`[WooCommerce] ⚠️  No se pudo extraer término del producto del mensaje`)
             }
-          }
+            
+            // Si no se encontró por SKU, buscar por nombre sin SKU
+            if (!productStockData) {
+              // Extraer término del producto (sin stop words, sin prefijos)
+              const productTerm = extractProductTerm(messageWithoutSku)
+              console.log(`[WooCommerce] Término del producto extraído (sin SKU): "${productTerm}"`)
+            
+              if (productTerm.length > 0) {
+                try {
+                  // Obtener todos los productos de WooCommerce
+                  const allProducts = await wordpressService.getAllProducts()
+                  
+                  if (allProducts && allProducts.length > 0) {
+                      // Si el término incluye "hola" u otras palabras de saludo, limpiarlo más agresivamente
+                      let termToUse = productTerm
+                      if (productTerm.includes('hola') || productTerm.includes('busco') || productTerm.includes('buscando') || productTerm.includes('llamado')) {
+                        const cleanedTerm = productTerm
+                          .replace(/\bhola\b/gi, '')
+                          .replace(/\bbusco\b/gi, '')
+                          .replace(/\bbuscando\b/gi, '')
+                          .replace(/\bllamado\b/gi, '')
+                          .replace(/\bun\b/gi, '')
+                          .replace(/\buna\b/gi, '')
+                          .trim()
+                        
+                        if (cleanedTerm.length > 0) {
+                          console.log(`[WooCommerce] Término limpiado adicionalmente: "${cleanedTerm}"`)
+                          termToUse = cleanedTerm
+                        }
+                      }
+                      
+                      // Aplicar matching determinístico sobre el término extraído
+                      const matchResult = productMatcher.matchProduct(
+                        termToUse,                    // ✅ Término del producto (limpio)
+                        allProducts,                    // Muestra de productos de WooCommerce
+                        p => p.sku || '',                // Función para obtener SKU
+                        p => p.name || ''                // Función para obtener nombre
+                      )
+                  
+                    console.log(`[WooCommerce] Resultado del matching determinístico: ${matchResult.status}`)
+                    
+                    if (matchResult.status === 'FOUND') {
+                      // Coincidencia exacta única: usar el producto encontrado
+                      productStockData = matchResult.product.originalProduct
+                      console.log(`[WooCommerce] ✅ Producto encontrado por matching determinístico: ${productStockData.name} (SKU: ${productStockData.sku || 'N/A'})`)
+                      
+                      // Si es un producto variable, consultar sus variaciones (lazy loading)
+                      if (productStockData.type === 'variable' && productStockData.id) {
+                        console.log(`[WooCommerce] 🔄 Producto variable detectado, consultando variaciones...`)
+                        try {
+                          const variations = await wordpressService.getProductVariations(productStockData.id)
+                          if (variations && variations.length > 0) {
+                            context.productVariations = variations
+                            console.log(`[WooCommerce] ✅ ${variations.length} variaciones encontradas para "${productStockData.name}"`)
+                          }
+                        } catch (error) {
+                          console.error(`[WooCommerce] ⚠️  Error obteniendo variaciones: ${error.message}`)
+                        }
+                      }
+                      
+                      context.productStockData = productStockData
+                      context.productSearchResults = [productStockData]
+                    } else if (matchResult.status === 'AMBIGUOUS') {
+                      // Múltiples coincidencias exactas: listar productos ambiguos
+                      console.log(`[WooCommerce] ⚠️  Múltiples productos con coincidencia exacta (${matchResult.ambiguousProducts.length}), se listarán para confirmación`)
+                      productSearchResults = matchResult.ambiguousProducts.map(m => m.originalProduct)
+                      context.productSearchResults = productSearchResults
+                    } else {
+                    // NOT_FOUND: no hay coincidencia exacta, buscar productos que contengan el término
+                    console.log(`[WooCommerce] ❌ No se encontró coincidencia exacta con término: "${termToUse}"`)
+                    console.log(`[WooCommerce] 🔍 Buscando productos que contengan el término parcialmente...`)
+                    
+                    // Normalizar término para búsqueda parcial (caracteres especiales, espacios)
+                    const normalizedTerm = normalizeSearchText(termToUse)
+                    let termWords = normalizedTerm.split(/\s+/).filter(w => w.length > 1) // Palabras de más de 1 carácter (más permisivo)
+                    
+                    // Si no hay palabras separadas pero el término tiene contenido, usarlo completo
+                    if (termWords.length === 0 && normalizedTerm.length > 2) {
+                      termWords = [normalizedTerm]
+                    }
+                    
+                    // Siempre intentar búsqueda parcial si hay al menos una palabra
+                    if (termWords.length > 0) {
+                      console.log(`[WooCommerce] Palabras a buscar: ${termWords.join(', ')}`)
+                      
+                      // Generar variaciones de cada palabra (singular/plural)
+                      const wordVariations = new Set()
+                      termWords.forEach(word => {
+                        // Agregar la palabra original
+                        wordVariations.add(word)
+                        
+                        // Convertir a singular
+                        const singular = pluralToSingular(word)
+                        if (singular !== word && singular.length > 1) {
+                          wordVariations.add(singular)
+                        }
+                        
+                        // Convertir a plural (si la palabra original parece ser singular)
+                        // Solo si la palabra original no termina en 's' o si es muy corta
+                        if (!word.endsWith('s') || word.length <= 4) {
+                          const plural = singularToPlural(word)
+                          if (plural !== word && plural.length > 1) {
+                            wordVariations.add(plural)
+                          }
+                        }
+                        
+                        // También generar plural del singular (para cubrir todos los casos)
+                        if (singular !== word) {
+                          const pluralFromSingular = singularToPlural(singular)
+                          if (pluralFromSingular !== singular && pluralFromSingular.length > 1) {
+                            wordVariations.add(pluralFromSingular)
+                          }
+                        }
+                      })
+                      
+                      const allVariations = Array.from(wordVariations)
+                      console.log(`[WooCommerce] Búsqueda con variaciones: ${allVariations.join(', ')}`)
+                      console.log(`[WooCommerce] Total de productos a buscar: ${allProducts.length}`)
+                      
+                      // Buscar productos cuyo nombre contenga alguna de las palabras clave o sus variaciones
+                      // Normalizar nombres de productos para comparación
+                      const partialMatches = allProducts.filter(product => {
+                        const productName = normalizeSearchText(product.name || '') // Normalizar nombre
+                        const productSku = normalizeCode(product.sku || '')        // Normalizar SKU (código)
+                        
+                        // Verificar si alguna palabra clave o variación está en el nombre o SKU normalizado
+                        return allVariations.some(word => 
+                          productName.includes(word) || 
+                          productSku.includes(word.toUpperCase())
+                        )
+                      })
+                      
+                      if (partialMatches.length > 0) {
+                        // Ordenar por relevancia: productos que contengan más palabras clave primero
+                        const scoredMatches = partialMatches.map(product => {
+                          const productName = normalizeSearchText(product.name || '') // Normalizar nombre
+                          const productSku = normalizeCode(product.sku || '')        // Normalizar SKU
+                          let score = 0
+                          
+                          // Puntuar por cada variación encontrada
+                          allVariations.forEach(word => {
+                            const wordUpper = word.toUpperCase()
+                            if (productSku.includes(wordUpper)) score += 3 // SKU tiene más peso
+                            if (productName.includes(word)) score += 2
+                            // Bonus si la palabra está al inicio del nombre
+                            if (productName.startsWith(word + ' ')) score += 1
+                          })
+                          
+                          return { product, score }
+                        }).sort((a, b) => b.score - a.score)
+                        
+                        const topMatches = scoredMatches.slice(0, 10).map(m => m.product) // Top 10 más relevantes
+                        
+                        console.log(`[WooCommerce] ✅ Encontrados ${partialMatches.length} productos que contienen "${termToUse}" (mostrando top ${topMatches.length})`)
+                        productSearchResults = topMatches
+                        context.productSearchResults = productSearchResults
+                        console.log(`[WooCommerce] Productos encontrados: ${topMatches.map(p => p.name).join(', ')}`)
+                      } else {
+                        console.log(`[WooCommerce] ❌ No se encontraron productos que contengan "${termToUse}"`)
+                        console.log(`[WooCommerce] Debug: término normalizado="${normalizedTerm}", palabras=${termWords.join(',')}, variaciones=${allVariations.join(',')}`)
+                        
+                        // Fallback: usar búsqueda nativa de WooCommerce (full-text) para no perder coincidencias simples
+                        try {
+                          const wpFallbackResults = await wordpressService.searchProductsInWordPress(termToUse, 10)
+                          if (wpFallbackResults?.length) {
+                            productSearchResults = wpFallbackResults
+                            context.productSearchResults = wpFallbackResults
+                            console.log(`[WooCommerce] ✅ Fallback WP search: ${wpFallbackResults.length} productos para "${termToUse}"`)
+                          } else {
+                            console.log(`[WooCommerce] ⚠️ Fallback WP search sin resultados para "${termToUse}"`)
+                          }
+                        } catch (fallbackError) {
+                          console.error(`[WooCommerce] ❌ Error en fallback WP search:`, fallbackError.message)
+                        }
+                      }
+                    } else {
+                      console.log(`[WooCommerce] ⚠️  No se pueden buscar palabras: término="${termToUse}", normalizado="${normalizedTerm}", palabras extraídas=${termWords.length}`)
+                    }
+                    } // Cierra el else del matchResult.status === 'NOT_FOUND'
+                  } else {
+                    console.log(`[WooCommerce] ⚠️  No se pudieron obtener productos de WooCommerce`)
+                  }
+                } catch (error) {
+                  console.error(`[WooCommerce] ❌ Error en matching determinístico:`, error.message)
+                  console.error(`   Stack:`, error.stack?.substring(0, 500))
+                }
+              } else {
+                console.log(`[WooCommerce] ⚠️  No se pudo extraer término del producto del mensaje`)
+              }
+            } // Cierra el if (!productStockData) de la línea 1245
+          } // Cierra el if (!productStockData && !productSearchResults.length) de la línea 1190
         } else {
           console.log(`[WooCommerce] ⚠️  Mensaje muy corto después de limpieza, no se puede buscar por nombre`)
-        }
+        } // Cierra el if (cleanMessage.length > 3) de la línea 1137
       } else {
         console.log(`[WooCommerce] ✅ Producto encontrado por referencia explícita, omitiendo búsqueda adicional`)
+      } // Cierra el if (!productStockData) de la línea 1120
+      
+      // Fallback adicional: si todavía no hay resultados, usar búsqueda nativa de WooCommerce
+      if (!productStockData && (!productSearchResults.length && !(context.productSearchResults?.length))) {
+        const fallbackTerm = normalizeSearchText(message) || message
+        try {
+          const wpFallbackResults = await wordpressService.searchProductsInWordPress(fallbackTerm, 10)
+          if (wpFallbackResults?.length) {
+            productSearchResults = wpFallbackResults
+            context.productSearchResults = wpFallbackResults
+            console.log(`[WooCommerce] ✅ Fallback WP search (final): ${wpFallbackResults.length} productos para "${fallbackTerm}"`)
+          } else {
+            console.log(`[WooCommerce] ⚠️ Fallback WP search (final) sin resultados para "${fallbackTerm}"`)
+          }
+        } catch (fallbackError) {
+          console.error(`[WooCommerce] ❌ Error en fallback WP search (final):`, fallbackError.message)
+        }
       }
       
-      if (!productStockData && !productSearchResults.length) {
+      // Verificar resultados finales (usar context para asegurar que tenemos los valores actualizados)
+      const finalSearchResults = context.productSearchResults || productSearchResults || []
+      if (!productStockData && !finalSearchResults.length) {
         console.log(`[WooCommerce] ⚠️ No se encontraron productos para: "${message}"`)
+        console.log(`[WooCommerce] Debug final: productStockData=${!!productStockData}, productSearchResults.length=${productSearchResults.length}, context.productSearchResults.length=${context.productSearchResults?.length || 0}`)
+      } else {
+        console.log(`[WooCommerce] ✅ Resultados finales: productStockData=${!!productStockData}, resultados parciales=${finalSearchResults.length}`)
       }
       
     } catch (error) {
@@ -1047,30 +1515,59 @@ Responde de forma breve (máximo 3-4 líneas), profesional y cercana, estilo Wha
           ? `$${parseFloat(productStockData.price).toLocaleString('es-CL')}` 
           : 'Precio no disponible'
         
+        // Si es una variación, incluir información del producto padre
+        const isVariation = productStockData.is_variation
+        const parentInfo = isVariation && productStockData.parent_product 
+          ? `\n- Producto padre: ${productStockData.parent_product.name}`
+          : ''
+        
+        // Si hay variaciones disponibles (producto variable), incluirlas
+        let variationsInfo = ''
+        if (context.productVariations && context.productVariations.length > 0 && !isVariation) {
+          const variationsList = context.productVariations.slice(0, 5).map(v => {
+            const vStock = v.stock_quantity !== null && v.stock_quantity !== undefined
+              ? `${v.stock_quantity} unidad${v.stock_quantity !== 1 ? 'es' : ''}`
+              : v.stock_status === 'instock' ? 'disponible' : 'sin stock'
+            const vPrice = v.price ? `$${parseFloat(v.price).toLocaleString('es-CL')}` : 'Precio N/A'
+            return `  - ${v.name}${v.sku ? ` (SKU: ${v.sku})` : ''} - ${vStock} - ${vPrice}`
+          }).join('\n')
+          
+          variationsInfo = `\n\nVARIACIONES DISPONIBLES (${context.productVariations.length} total${context.productVariations.length > 5 ? ', mostrando 5' : ''}):\n${variationsList}`
+        }
+        
         textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
 
 INFORMACIÓN REAL DEL PRODUCTO (consultada desde WooCommerce en tiempo real):
 - Nombre del producto: ${productStockData.name}
 ${productStockData.sku ? `- SKU: ${productStockData.sku}` : ''}
 - Stock: ${stockInfo}
-- Precio: ${priceInfo}
+- Precio: ${priceInfo}${parentInfo}${variationsInfo}
 
 El cliente preguntó: "${message}"
 
-INSTRUCCIONES OBLIGATORIAS:
-- Responde directamente con la información del producto ENCONTRADO
-- Menciona el nombre completo del producto: "${productStockData.name}"
-${productStockData.sku ? `- Menciona el SKU: ${productStockData.sku}` : ''}
-- Menciona el stock exacto: "${stockInfo}"
-- Menciona el precio exacto: "${priceInfo}"
-- Responde en máximo 3-4 líneas, profesional, estilo WhatsApp
+INSTRUCCIONES OBLIGATORIAS - FORMATO EXACTO:
+Responde EXACTAMENTE en este formato, con saltos de línea entre cada elemento:
+
+1. Confirmación con nombre: "Sí, tenemos el ${productStockData.name} disponible."
+2. SKU (en línea separada): "SKU: ${productStockData.sku || 'N/A'}."
+3. Stock (en línea separada): "Stock: ${stockInfo}."
+4. Precio (en línea separada): "Precio: ${priceInfo}."
+${variationsInfo ? '5. Variaciones (en líneas separadas): Menciona las variaciones disponibles con sus SKUs, stock y precios.' : ''}
+${variationsInfo ? '6. Pregunta de seguimiento (en línea separada): "¿Te gustaría saber algo más? 😊"' : '5. Pregunta de seguimiento (en línea separada): "¿Te gustaría saber algo más? 😊"'}
+
+IMPORTANTE:
+- Cada elemento debe estar en una línea separada (usa saltos de línea)
+- El orden debe ser: Confirmación → SKU → Stock → Precio${variationsInfo ? ' → Variaciones' : ''} → Pregunta
+- ${variationsInfo ? 'Si hay variaciones, listarlas con formato: "Variaciones disponibles: [lista con SKU, stock y precio de cada una]"\n- ' : ''}Usa el formato exacto mostrado arriba
 - NO ofrezcas reservar ni agregar al carrito (esas funciones no están disponibles)
 - NO digas "estoy verificando" - ya tienes la información real del producto
 - NO inventes información que no esté arriba`
         
-      } else if (productSearchResults && productSearchResults.length > 0) {
+      } else if ((productSearchResults && productSearchResults.length > 0) || (context.productSearchResults && context.productSearchResults.length > 0)) {
+        // Usar context.productSearchResults si está disponible, sino usar la variable local
+        const finalSearchResults = context.productSearchResults || productSearchResults || []
         // Se encontraron varios productos, mencionar el primero o lista
-        const productsList = productSearchResults.slice(0, 3).map(p => 
+        const productsList = finalSearchResults.slice(0, 3).map(p => 
           `- ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''}${p.price ? ` - $${p.price.toLocaleString('es-CL')}` : ''}`
         ).join('\n')
         
@@ -1112,26 +1609,63 @@ INSTRUCCIONES OBLIGATORIAS:
 - NO digas "estoy verificando" - ya se verificó exhaustivamente y no se encontró
 - NO digas "te respondo enseguida" - ya se verificó
 - Sé empático y útil`
-        } else {
-          // No se encontró información del producto y no había referencia explícita
-          textoParaIA = `Redacta una respuesta clara y formal en español chileno informando al cliente que estás verificando la información del producto.
+      } else {
+        // No se encontró información del producto y no había referencia explícita
+        // Si hay resultados de búsqueda parcial, usarlos; si no, pedir más información
+        const finalSearchResults = context.productSearchResults || productSearchResults || []
+        if (finalSearchResults.length > 0) {
+          // Hay resultados parciales, listarlos
+          const productsList = finalSearchResults.slice(0, 5).map(p => {
+            const stockInfo = p.stock_quantity !== null && p.stock_quantity !== undefined
+              ? `${p.stock_quantity} unidad${p.stock_quantity !== 1 ? 'es' : ''}`
+              : p.stock_status === 'instock' ? 'disponible' : 'sin stock'
+            const priceInfo = p.price ? `$${parseFloat(p.price).toLocaleString('es-CL')}` : 'Precio no disponible'
+            return `- ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''} - ${stockInfo} - ${priceInfo}`
+          }).join('\n')
+          
+          textoParaIA = `Redacta una respuesta clara y profesional en español chileno informando al cliente sobre los productos encontrados.
+
+PRODUCTOS ENCONTRADOS relacionados con "${message}" (información real de WooCommerce):
+${productsList}
+${finalSearchResults.length > 5 ? `\n(Total: ${finalSearchResults.length} productos encontrados, mostrando los 5 más relevantes)` : ''}
 
 El cliente preguntó: "${message}"
 
-IMPORTANTE:
+INSTRUCCIONES OBLIGATORIAS:
+- Menciona que encontraste ${finalSearchResults.length} producto(s) relacionado(s) con "${message}"
+- Lista los productos encontrados con su nombre, SKU (si está disponible), stock y precio
+- Indica cuáles tienen stock disponible
+- Si hay más de 5 productos, menciona que hay más opciones disponibles
+- Responde máximo 4-5 líneas, profesional, estilo WhatsApp
+- Ofrece ayuda para buscar un producto más específico si el cliente necesita más detalles
+- NO digas "estoy verificando" - ya tienes la información real de los productos
+- NO inventes información que no esté en la lista arriba`
+        } else {
+          // No se encontró nada, pedir más información
+          textoParaIA = `Redacta una respuesta clara y profesional en español chileno informando al cliente.
+
+El cliente preguntó: "${message}"
+
+SITUACIÓN:
+No se encontraron productos que coincidan con "${message}" después de buscar en todo el catálogo.
+
+INSTRUCCIONES OBLIGATORIAS:
 - Responde de forma breve (máximo 3-4 líneas), profesional y cercana, estilo WhatsApp
-- Indica que estás consultando la información del producto
-- Pide que el cliente sea más específico con el nombre o SKU del producto si es necesario
-- Ofrece ayuda para encontrar el producto correcto`
+- Indica amablemente que no se encontraron productos con ese nombre
+- Pide que el cliente sea más específico con el nombre completo o SKU del producto
+- Ofrece ayuda para buscar el producto correcto
+- NO digas "estoy verificando" - ya se buscó exhaustivamente
+- Sé empático y útil`
         }
-      }
-      
+      } // Cierra el if (hasExplicitReference) / else sin referencia explícita
+    } // Cierra el bloque cuando no se encontró información del producto
+    
     } else {
       // Otra consulta
       textoParaIA = `Redacta una respuesta clara y formal en español chileno para la siguiente consulta del cliente: "${message}".
 
 Responde de forma breve (máximo 3-4 líneas), profesional y cercana, estilo WhatsApp.`
-    }
+    } // Cierra el if (isGeneral) / else if (isProduct) / else
     
     // Obtener historial de conversación para contexto
     const conversationHistory = session.history || []
@@ -1173,7 +1707,7 @@ Responde de forma breve (máximo 3-4 líneas), profesional y cercana, estilo Wha
     // (esto se puede hacer desde el frontend también)
   }
   
-    return createResponse(
+  return createResponse(
       aiResponse,
       session.state,
       options.length > 0 ? options : null,
