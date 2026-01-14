@@ -324,7 +324,7 @@ export async function initChat(userId) {
   const stockLoaded = await stockService.isStockLoaded()
   if (!stockLoaded) {
     return createResponse(
-      '¡Hola! 👋 Estamos cargando el stock en este momento. Por favor espera unos segundos y vuelve a consultar, te ayudaré en cuanto esté listo.',
+      '¡Hola! 👋 Soy tu asistente de pedidos B2B.\n\n¿Qué deseas hacer?',
       session.state,
       null,
       cart
