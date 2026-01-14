@@ -324,7 +324,7 @@ export async function initChat(userId) {
   const stockLoaded = await stockService.isStockLoaded()
   if (!stockLoaded) {
     return createResponse(
-      '⚠️ El sistema aún no tiene stock cargado. Contacte al administrador.',
+      '¡Hola! 👋 Estamos cargando el stock en este momento. Por favor espera unos segundos y vuelve a consultar, te ayudaré en cuanto esté listo.',
       session.state,
       null,
       cart
