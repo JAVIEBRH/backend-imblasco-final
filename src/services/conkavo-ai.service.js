@@ -300,10 +300,13 @@ Mensaje: "${message}"${historyContext}
 INSTRUCCIONES:
 Analiza el mensaje y responde SOLO con un JSON válido en este formato exacto:
 {
-  "tipo": "PRODUCTO" | "INFORMACION_GENERAL" | "AMBIGUA",
+  "tipo": "PRODUCTO" | "INFORMACION_GENERAL" | "AMBIGUA" | "VARIANTE" | "CARACTERISTICAS" | "FALLBACK",
   "terminoProducto": "término extraído o null",
   "sku": "SKU detectado o null",
   "id": "ID detectado o null",
+  "atributo": "atributo solicitado (ej: 'color', 'tamaño') o null",
+  "valorAtributo": "valor del atributo (ej: 'blanco', 'grande') o null",
+  "tipoFallback": "FUTURO" | "RESERVA" | "DESCUENTO" | null,
   "necesitaMasInfo": true | false,
   "razon": "breve explicación de la decisión"
 }
@@ -316,32 +319,49 @@ REGLAS ESTRICTAS (CRÍTICO - EVITAR FALSOS POSITIVOS):
    - "hola tienen productos" → AMBIGUA (genérico, sin término específico)
    - "necesito saber si tienen" → AMBIGUA (sin término)
 
-2. INFORMACION_GENERAL: Solo si pregunta explícitamente información de la empresa
+2. VARIANTE: Si pregunta por un atributo específico de un producto (color, tamaño, etc.)
+   - "¿El M46 está en color blanco?" → VARIANTE (término: "M46", atributo: "color", valorAtributo: "blanco")
+   - "¿Tienen el L74 en tamaño grande?" → VARIANTE (término: "L74", atributo: "tamaño", valorAtributo: "grande")
+   - "¿está en color blanco?" (con contexto) → VARIANTE (atributo: "color", valorAtributo: "blanco")
+
+3. CARACTERISTICAS: Si pregunta qué características tiene un producto
+   - "¿Qué características tiene el L74?" → CARACTERISTICAS (término: "L74")
+   - "¿Qué tiene el producto?" (con contexto) → CARACTERISTICAS
+
+4. FALLBACK: Si pregunta por funciones no disponibles
+   - "¿Cuándo llega stock?" → FALLBACK (tipoFallback: "FUTURO")
+   - "¿Me guardan uno?" → FALLBACK (tipoFallback: "RESERVA")
+   - "¿Me hacen precio por volumen?" → FALLBACK (tipoFallback: "DESCUENTO")
+
+5. INFORMACION_GENERAL: Solo si pregunta explícitamente información de la empresa
    - "horarios", "dirección", "contacto", "pagos", "garantía"
 
-3. AMBIGUA: Cuando el mensaje es genérico sin término específico
+6. AMBIGUA: Cuando el mensaje es genérico sin término específico
    - "tienen un producto" → AMBIGUA
    - "hola tienen productos" → AMBIGUA
    - "necesito saber si tienen" → AMBIGUA
    - "cuál es su precio" (sin contexto) → AMBIGUA
 
-4. Extracción de términos:
+7. Extracción de términos:
    - NO extraigas términos genéricos como "producto", "productos", "artículo"
    - Solo extrae nombres específicos: "mochila", "bolígrafo", "llavero"
    - Si el término es genérico, marca tipo: "AMBIGUA"
 
-5. SKU/ID: Solo si son explícitos y claros
+8. SKU/ID: Solo si son explícitos y claros
    - "K62", "L02", "601050020" → SKU válido
    - NO inventes SKUs que no estén en el mensaje
 
-6. CONSERVADOR: Si hay duda, marca AMBIGUA con necesitaMasInfo: true
+9. CONSERVADOR: Si hay duda, marca AMBIGUA con necesitaMasInfo: true
 
 Ejemplos:
-- "tienen mochilas?" → {"tipo":"PRODUCTO","terminoProducto":"mochila","sku":null,"id":null,"necesitaMasInfo":false,"razon":"Consulta de producto con término específico"}
-- "necesito saber si tienen un producto" → {"tipo":"AMBIGUA","terminoProducto":null,"sku":null,"id":null,"necesitaMasInfo":true,"razon":"Consulta genérica sin término de producto específico"}
-- "tienen el producto K62?" → {"tipo":"PRODUCTO","terminoProducto":"K62","sku":"K62","id":null,"necesitaMasInfo":false,"razon":"Consulta de producto con SKU explícito"}
-- "cuál es su precio" → {"tipo":"PRODUCTO","terminoProducto":null,"sku":null,"id":null,"necesitaMasInfo":true,"razon":"Consulta ambigua, necesita contexto del historial"}
-- "horarios de atención" → {"tipo":"INFORMACION_GENERAL","terminoProducto":null,"sku":null,"id":null,"necesitaMasInfo":false,"razon":"Consulta de información general"}
+- "tienen mochilas?" → {"tipo":"PRODUCTO","terminoProducto":"mochila","sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta de producto con término específico"}
+- "¿El M46 está en color blanco?" → {"tipo":"VARIANTE","terminoProducto":"M46","sku":"M46","id":null,"atributo":"color","valorAtributo":"blanco","tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta sobre variante específica (color)"}
+- "¿Qué características tiene el L74?" → {"tipo":"CARACTERISTICAS","terminoProducto":"L74","sku":"L74","id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta sobre características del producto"}
+- "¿Cuándo llega stock?" → {"tipo":"FALLBACK","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":"FUTURO","necesitaMasInfo":false,"razon":"Consulta sobre futuro, no disponible"}
+- "¿Me guardan uno?" → {"tipo":"FALLBACK","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":"RESERVA","necesitaMasInfo":false,"razon":"Consulta sobre reserva, no disponible"}
+- "¿Me hacen precio por volumen?" → {"tipo":"FALLBACK","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":"DESCUENTO","necesitaMasInfo":false,"razon":"Consulta sobre descuento, no disponible"}
+- "necesito saber si tienen un producto" → {"tipo":"AMBIGUA","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":true,"razon":"Consulta genérica sin término de producto específico"}
+- "horarios de atención" → {"tipo":"INFORMACION_GENERAL","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta de información general"}
 
 Respuesta (SOLO el JSON, sin explicaciones adicionales):`
 
@@ -369,10 +389,27 @@ Respuesta (SOLO el JSON, sin explicaciones adicionales):`
       
       // VALIDACIONES ESTRICTAS para evitar falsos positivos
       // 1. Validar que el tipo sea uno de los permitidos
-      if (!['PRODUCTO', 'INFORMACION_GENERAL', 'AMBIGUA'].includes(analisis.tipo)) {
+      const tiposValidos = ['PRODUCTO', 'INFORMACION_GENERAL', 'AMBIGUA', 'VARIANTE', 'CARACTERISTICAS', 'FALLBACK']
+      if (!tiposValidos.includes(analisis.tipo)) {
         console.error(`[IA] ⚠️ Tipo inválido de OpenAI: "${analisis.tipo}" → Forzando AMBIGUA`)
         analisis.tipo = 'AMBIGUA'
         analisis.necesitaMasInfo = true
+      }
+      
+      // 2. Validar tipos de fallback
+      if (analisis.tipo === 'FALLBACK' && !['FUTURO', 'RESERVA', 'DESCUENTO'].includes(analisis.tipoFallback)) {
+        console.error(`[IA] ⚠️ TipoFallback inválido: "${analisis.tipoFallback}" → Forzando AMBIGUA`)
+        analisis.tipo = 'AMBIGUA'
+        analisis.tipoFallback = null
+        analisis.necesitaMasInfo = true
+      }
+      
+      // 3. Validar que VARIANTE tenga atributo y valorAtributo
+      if (analisis.tipo === 'VARIANTE' && (!analisis.atributo || !analisis.valorAtributo)) {
+        console.error(`[IA] ⚠️ VARIANTE sin atributo/valorAtributo → Forzando PRODUCTO`)
+        analisis.tipo = 'PRODUCTO'
+        analisis.atributo = null
+        analisis.valorAtributo = null
       }
       
       // 2. Validar que si es PRODUCTO, tenga término o SKU/ID
@@ -399,12 +436,17 @@ Respuesta (SOLO el JSON, sin explicaciones adicionales):`
         analisis.necesitaMasInfo = true
       }
       
-      // 5. Si es AMBIGUA, forzar necesitaMasInfo a true
+      // 6. Si es AMBIGUA, forzar necesitaMasInfo a true
       if (analisis.tipo === 'AMBIGUA') {
         analisis.necesitaMasInfo = true
       }
       
-      console.log(`[IA] ✅ Análisis de intención validado: tipo=${analisis.tipo}, término=${analisis.terminoProducto || 'N/A'}, SKU=${analisis.sku || 'N/A'}, necesitaMásInfo=${analisis.necesitaMasInfo}`)
+      // 7. Inicializar campos nuevos si no existen
+      if (!analisis.atributo) analisis.atributo = null
+      if (!analisis.valorAtributo) analisis.valorAtributo = null
+      if (!analisis.tipoFallback) analisis.tipoFallback = null
+      
+      console.log(`[IA] ✅ Análisis de intención validado: tipo=${analisis.tipo}, término=${analisis.terminoProducto || 'N/A'}, SKU=${analisis.sku || 'N/A'}, atributo=${analisis.atributo || 'N/A'}, valorAtributo=${analisis.valorAtributo || 'N/A'}, tipoFallback=${analisis.tipoFallback || 'N/A'}, necesitaMásInfo=${analisis.necesitaMasInfo}`)
       return analisis
     } catch (parseError) {
       console.error(`[IA] ❌ Error parseando JSON de análisis:`, parseError.message)
@@ -415,6 +457,9 @@ Respuesta (SOLO el JSON, sin explicaciones adicionales):`
         terminoProducto: null,
         sku: null,
         id: null,
+        atributo: null,
+        valorAtributo: null,
+        tipoFallback: null,
         necesitaMasInfo: true,
         razon: 'Error al analizar, se requiere más información'
       }
@@ -428,6 +473,9 @@ Respuesta (SOLO el JSON, sin explicaciones adicionales):`
       terminoProducto: null,
       sku: null,
       id: null,
+      atributo: null,
+      valorAtributo: null,
+      tipoFallback: null,
       necesitaMasInfo: true,
       razon: 'Error al analizar, se requiere más información'
     }

@@ -132,12 +132,18 @@ export async function getProductStock(identifier) {
     return {
       available,
       stock: stockQuantity,
+      stock_quantity: stockQuantity, // Compatibilidad
       price: product.price ? parseFloat(product.price) : null,
       name: product.name || '',
       sku: product.sku || '',
       id: product.id,
       stock_status: product.stock_status || 'unknown',
-      manage_stock: product.manage_stock || false
+      manage_stock: product.manage_stock || false,
+      type: product.type || 'simple',
+      description: product.description || '',
+      short_description: product.short_description || '',
+      attributes: product.attributes || [],
+      categories: product.categories || []
     }
   } catch (error) {
     console.error('Error obteniendo stock del producto:', error.message)
@@ -267,7 +273,12 @@ export async function searchProductsInWordPress(searchTerm, limit = 10) {
         : null,
       stock_status: product.stock_status || 'unknown',
       manage_stock: product.manage_stock || false,
-      available: product.stock_status === 'instock' || (product.stock_quantity && parseInt(product.stock_quantity) > 0)
+      available: product.stock_status === 'instock' || (product.stock_quantity && parseInt(product.stock_quantity) > 0),
+      type: product.type || 'simple',
+      description: product.description || '',
+      short_description: product.short_description || '',
+      attributes: product.attributes || [],
+      categories: product.categories || []
     }))
   } catch (error) {
     console.error('Error buscando productos:', error.message)
@@ -328,7 +339,12 @@ export async function getProductBySku(sku) {
               : null,
             stock_status: product.stock_status || 'unknown',
             manage_stock: product.manage_stock || false,
-            available: product.stock_status === 'instock' || (product.stock_quantity && parseInt(product.stock_quantity) > 0)
+            available: product.stock_status === 'instock' || (product.stock_quantity && parseInt(product.stock_quantity) > 0),
+            type: product.type || 'simple',
+            description: product.description || '',
+            short_description: product.short_description || '',
+            attributes: product.attributes || [],
+            categories: product.categories || []
           }
         }
       } catch (error) {
@@ -406,7 +422,7 @@ export async function getProductVariations(productId) {
       stock_status: variation.stock_status || 'unknown',
       manage_stock: variation.manage_stock || false,
       available: variation.stock_status === 'instock' || (variation.stock_quantity && parseInt(variation.stock_quantity) > 0),
-      attributes: variation.attributes || [],
+      attributes: variation.attributes || [], // Array de objetos con {id, name, option}
       parent_id: productId
     }))
   } catch (error) {
