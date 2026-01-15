@@ -1043,15 +1043,27 @@ export async function processMessageWithAI(userId, message) {
     if (queryType === 'AMBIGUA') {
       console.log(`[WooCommerce] ⚠️ Consulta ambigua detectada → OpenAI determinó que se necesita más información`)
       
-      // OpenAI ya analizó el contexto y decidió que es AMBIGUA
-      // Si hubiera detectado que se refiere al producto del contexto, lo habría clasificado como PRODUCTO
-      // Por lo tanto, pedir más información directamente
-      return createResponse(
-        'Necesito el nombre completo o el SKU del producto para darte precio y stock. ¿Me lo confirmas?',
-        session.state,
-        null,
-        cart
-      )
+      // Distinguir entre saludos genéricos y consultas ambiguas reales
+      const normalizedMessage = normalizeSearchText(message).toLowerCase().trim()
+      const isGreeting = /^(hola|hi|hello|buenos\s+dias|buenas\s+tardes|buenas\s+noches|buen\s+dia|buen\s+día)/i.test(message) && normalizedMessage.length < 20
+      
+      if (isGreeting) {
+        // Saludo genérico: responder amigablemente y ofrecer ayuda
+        return createResponse(
+          '¡Hola! 👋 ¿En qué puedo ayudarte hoy? Si tienes alguna pregunta sobre nuestros productos o servicios, no dudes en decírmelo.',
+          session.state,
+          null,
+          cart
+        )
+      } else {
+        // Consulta ambigua real: pedir más información específica
+        return createResponse(
+          'Necesito el nombre completo o el SKU del producto para darte precio y stock. ¿Me lo confirmas?',
+          session.state,
+          null,
+          cart
+        )
+      }
     }
     
     // Si es consulta de PRODUCTOS, buscar en WooCommerce
