@@ -286,6 +286,59 @@ function extractProductTerm(message) {
   return result
 }
 
+/**
+ * Determina si una consulta ambigua se refiere al producto del contexto
+ * Solo usa el contexto si la consulta pregunta sobre precio, stock, disponibilidad, etc.
+ * No usa el contexto para saludos genéricos o preguntas sobre otros productos
+ */
+function isAmbiguousQueryAboutContextProduct(message) {
+  const normalizedMessage = normalizeSearchText(message).toLowerCase()
+  
+  // Patrones que indican que la consulta se refiere al producto del contexto
+  const contextPatterns = [
+    /(?:cuanto|cuánto|cuántas|cuántos)\s+(?:cuesta|vale|es|hay)/i,
+    /(?:cual|cuál)\s+es\s+(?:su|el)\s+(?:precio|stock)/i,
+    /(?:tiene|tienen)\s+(?:stock|disponible)/i,
+    /(?:esta|está|están)\s+(?:disponible|disponibles)/i,
+    /(?:hay|existe)\s+(?:stock|unidades)/i,
+    /(?:cuantas|cuántas)\s+unidades/i,
+    /(?:su|el)\s+(?:precio|stock|disponibilidad)/i,
+    /(?:precio|stock|disponible)\s+(?:de|del|de la)/i
+  ]
+  
+  // Patrones que indican que NO se refiere al contexto (saludos, preguntas genéricas, otros productos)
+  const nonContextPatterns = [
+    /^hola/i,
+    /^buenos\s+dias/i,
+    /^buenas\s+tardes/i,
+    /^buenas\s+noches/i,
+    /^gracias/i,
+    /^adios/i,
+    /^chao/i,
+    /tienen\s+(?:usb|pendrive|cable|boligrafo|mochila|termo|mug|botella|llavero|otro|otros|otra|otras)/i, // Menciona otros productos específicos
+    /(?:que|qué)\s+(?:tienen|tienes|hay)/i, // "qué tienen" es genérico
+    /(?:tienen|tienes)\s+(?:algo|algun|alguna|algunos|algunas)/i // "tienen algo" es genérico
+  ]
+  
+  // Si coincide con patrones de NO contexto, retornar false
+  if (nonContextPatterns.some(pattern => pattern.test(message))) {
+    return false
+  }
+  
+  // Si coincide con patrones de contexto, retornar true
+  if (contextPatterns.some(pattern => pattern.test(message))) {
+    return true
+  }
+  
+  // Si el mensaje es muy corto (solo saludos), no usar contexto
+  if (normalizedMessage.trim().length < 10 && /^(hola|hi|hello|buenos|buenas|gracias|adios|chao)/i.test(message)) {
+    return false
+  }
+  
+  // Por defecto, si no hay indicadores claros, no usar contexto (conservador)
+  return false
+}
+
 // Sesiones de usuarios (en memoria, solo para estado conversacional)
 const sessions = new Map()
 
@@ -1040,24 +1093,24 @@ export async function processMessageWithAI(userId, message) {
     if (queryType === 'AMBIGUA') {
       console.log(`[WooCommerce] ⚠️ Consulta ambigua detectada → Se pedirá más información sin buscar productos`)
       
-      // Verificar si hay contexto de productos anteriores antes de pedir más info
-      if (context.currentProduct) {
-        console.log(`[WooCommerce] 🔍 Consulta ambigua, pero hay producto en contexto: ${context.currentProduct.name || context.currentProduct.codigo || 'N/A'}`)
-        // Usar el producto del contexto
+      // Verificar si hay contexto de productos anteriores Y si la consulta realmente se refiere a ese producto
+      if (context.currentProduct && isAmbiguousQueryAboutContextProduct(message)) {
+        console.log(`[WooCommerce] 🔍 Consulta ambigua se refiere al producto en contexto: ${context.currentProduct.name || context.currentProduct.codigo || 'N/A'}`)
+        // Usar el producto del contexto solo si la consulta realmente se refiere a él
         productStockData = context.currentProduct
         context.productStockData = productStockData
         session.currentProduct = productStockData
         queryType = 'PRODUCTOS' // Cambiar a PRODUCTOS porque tenemos contexto
         context.queryType = queryType // Actualizar context también
-      } else {
-        // Buscar en historial reciente
+      } else if (isAmbiguousQueryAboutContextProduct(message)) {
+        // Buscar en historial reciente solo si la consulta realmente se refiere a un producto anterior
         const recentHistory = session.history?.slice(-10) || []
         for (const msg of recentHistory.reverse()) {
           if (msg.sender === 'bot' && msg.message) {
             const skuMatch = msg.message.match(/SKU[:\s]+([^\s\n]+)/i)
             if (skuMatch) {
               const skuFromHistory = skuMatch[1].trim()
-              console.log(`[WooCommerce] 🔍 Consulta ambigua, pero encontré SKU en historial: "${skuFromHistory}"`)
+              console.log(`[WooCommerce] 🔍 Consulta ambigua se refiere a producto, encontré SKU en historial: "${skuFromHistory}"`)
               try {
                 const productFromHistory = await wordpressService.getProductBySku(skuFromHistory)
                 if (productFromHistory) {
@@ -1075,6 +1128,8 @@ export async function processMessageWithAI(userId, message) {
             }
           }
         }
+      } else {
+        console.log(`[WooCommerce] ⚠️ Consulta ambigua no se refiere a producto del contexto (saludo o pregunta genérica)`)
       }
       
       // Si después de buscar contexto todavía no hay producto, pedir más información
