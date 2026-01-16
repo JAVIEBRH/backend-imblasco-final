@@ -385,6 +385,8 @@ Ejemplos CON CONTEXTO DE PRODUCTO:
   - "cuanto cuesta" → {"tipo":"PRODUCTO","terminoProducto":"L39","sku":"L39","id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta sobre precio del producto del contexto"}
   - "cual es su precio" → {"tipo":"PRODUCTO","terminoProducto":"L39","sku":"L39","id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta sobre precio del producto del contexto"}
   - "tiene stock?" → {"tipo":"PRODUCTO","terminoProducto":"L39","sku":"L39","id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta sobre stock del producto del contexto"}
+  - "en que colores?" → {"tipo":"VARIANTE","terminoProducto":"L39","sku":"L39","id":null,"atributo":"color","valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta sobre colores disponibles del producto del contexto"}
+  - "qué colores tiene?" → {"tipo":"VARIANTE","terminoProducto":"L39","sku":"L39","id":null,"atributo":"color","valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta sobre colores disponibles del producto del contexto"}
   - "hola!!!" → {"tipo":"AMBIGUA","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":true,"razon":"Saludo genérico, no se refiere al producto del contexto"}
   - "tienen usb?" → {"tipo":"AMBIGUA","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":true,"razon":"Pregunta sobre otro producto (USB), no se refiere al contexto"}
 
