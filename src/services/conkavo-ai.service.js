@@ -429,13 +429,15 @@ Respuesta (SOLO el JSON, sin explicaciones adicionales):`
         analisis.necesitaMasInfo = true
       }
       
-      // 3. Validar que VARIANTE tenga atributo y valorAtributo
-      if (analisis.tipo === 'VARIANTE' && (!analisis.atributo || !analisis.valorAtributo)) {
-        console.error(`[IA] ⚠️ VARIANTE sin atributo/valorAtributo → Forzando PRODUCTO`)
+      // 3. Validar que VARIANTE tenga atributo (valorAtributo puede ser null cuando se pregunta "qué colores tiene")
+      // NOTA: valorAtributo puede ser null cuando se pregunta "qué colores tiene" (listar variantes disponibles)
+      if (analisis.tipo === 'VARIANTE' && !analisis.atributo) {
+        console.error(`[IA] ⚠️ VARIANTE sin atributo → Forzando PRODUCTO`)
         analisis.tipo = 'PRODUCTO'
         analisis.atributo = null
         analisis.valorAtributo = null
       }
+      // Si tiene atributo pero no valorAtributo, es válido (pregunta para listar variantes)
       
       // 2. Validar que si es PRODUCTO, tenga término o SKU/ID
       if (analisis.tipo === 'PRODUCTO' && !analisis.terminoProducto && !analisis.sku && !analisis.id) {

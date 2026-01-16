@@ -1233,6 +1233,20 @@ export async function processMessageWithAI(userId, message) {
             session.currentProduct = productBySku // Guardar para futuras referencias
             console.log(`[WooCommerce] ✅ Producto encontrado por SKU explícito: ${productBySku.name || 'N/A'} (SKU: ${productBySku.sku || 'N/A'})`)
             console.log(`   Stock: ${productBySku.stock_quantity !== null ? productBySku.stock_quantity : 'N/A'}, Precio: ${productBySku.price ? '$' + productBySku.price : 'N/A'}`)
+            
+            // Si es un producto variable, cargar variaciones automáticamente
+            if (productBySku.type === 'variable' && productBySku.id) {
+              console.log(`[WooCommerce] 🔄 Producto variable detectado, cargando variaciones automáticamente...`)
+              try {
+                const variations = await wordpressService.getProductVariations(productBySku.id)
+                if (variations && variations.length > 0) {
+                  context.productVariations = variations
+                  console.log(`[WooCommerce] ✅ ${variations.length} variaciones cargadas para "${productBySku.name}"`)
+                }
+              } catch (error) {
+                console.error(`[WooCommerce] ⚠️ Error cargando variaciones: ${error.message}`)
+              }
+            }
           } else {
             console.log(`[WooCommerce] ❌ No se encontró producto con SKU explícito: "${providedExplicitSku}"`)
             console.log(`   Se omite búsqueda masiva en variaciones para evitar demoras; se intentará localizar por nombre con el código proporcionado.`)
@@ -1747,7 +1761,25 @@ export async function processMessageWithAI(userId, message) {
         session.currentProduct = productStockData
         
         // Verificar si es producto variable
-        if (productStockData.type === 'variable' && productStockData.id && analisisOpenAI?.atributo && analisisOpenAI?.valorAtributo) {
+        // Cargar variaciones si es variable y se pregunta por variantes (con o sin valorAtributo)
+        if (productStockData.type === 'variable' && productStockData.id && analisisOpenAI?.atributo) {
+          // Cargar variaciones si no están cargadas
+          if (!context.productVariations) {
+            console.log(`[WooCommerce] 🔄 Cargando variaciones para producto variable...`)
+            try {
+              const variations = await wordpressService.getProductVariations(productStockData.id)
+              if (variations && variations.length > 0) {
+                context.productVariations = variations
+                console.log(`[WooCommerce] ✅ ${variations.length} variaciones cargadas`)
+              }
+            } catch (error) {
+              console.error(`[WooCommerce] ⚠️ Error cargando variaciones: ${error.message}`)
+            }
+          }
+          
+          const tieneValorAtributo = analisisOpenAI?.valorAtributo && analisisOpenAI.valorAtributo.trim().length > 0
+          
+          if (tieneValorAtributo) {
           // Normalizar atributo y valor para búsqueda (ya validados en el if)
           const atributoNormalizado = (analisisOpenAI.atributo || '').toLowerCase().trim()
           const valorNormalizado = (analisisOpenAI.valorAtributo || '').toLowerCase().trim()
@@ -1814,6 +1846,61 @@ export async function processMessageWithAI(userId, message) {
                 razon: 'Atributo existe pero variante específica no encontrada'
               }
               console.log(`[WooCommerce] ❌ Variante no encontrada en variaciones: ${atributoNormalizado}="${valorNormalizado}"`)
+            }
+          } else {
+            // CASO 2: NO tiene valorAtributo → Listar todas las variantes disponibles del atributo
+            // Ejemplo: "qué color tiene T60?" o "en que colores?" → listar todos los colores disponibles
+            const atributoNormalizado = (analisisOpenAI.atributo || '').toLowerCase().trim()
+            console.log(`[WooCommerce] 🔍 Consultando variantes disponibles para atributo: "${atributoNormalizado}"`)
+            
+            // Las variaciones ya deberían estar cargadas arriba, pero verificar
+            if (!context.productVariations && productStockData.id) {
+              console.log(`[WooCommerce] 🔄 Cargando variaciones para listar ${atributoNormalizado}s...`)
+              try {
+                const variations = await wordpressService.getProductVariations(productStockData.id)
+                if (variations && variations.length > 0) {
+                  context.productVariations = variations
+                  console.log(`[WooCommerce] ✅ ${variations.length} variaciones cargadas`)
+                }
+              } catch (error) {
+                console.error(`[WooCommerce] ⚠️ Error cargando variaciones: ${error.message}`)
+              }
+            }
+            
+            // Extraer valores únicos del atributo solicitado
+            const valoresDisponibles = new Set()
+            if (context.productVariations && Array.isArray(context.productVariations)) {
+              context.productVariations.forEach(variation => {
+                if (variation.attributes && Array.isArray(variation.attributes)) {
+                  variation.attributes.forEach(attr => {
+                    const attrName = (attr.name || '').toLowerCase().trim()
+                    if (attrName === atributoNormalizado && attr.option) {
+                      valoresDisponibles.add(attr.option.trim())
+                    }
+                  })
+                }
+              })
+            }
+            
+            // Guardar valores REALES disponibles (validados de WooCommerce)
+            const valoresArray = Array.from(valoresDisponibles).sort()
+            
+            // ⚠️ VALIDACIÓN: Solo guardar si hay valores REALES
+            if (valoresArray.length > 0) {
+              context.variantesDisponibles = {
+                atributo: analisisOpenAI.atributo,
+                valores: valoresArray // Valores REALES de WooCommerce
+              }
+              
+              console.log(`[WooCommerce] ✅ Variantes REALES disponibles para "${atributoNormalizado}": ${valoresArray.join(', ')}`)
+              context.varianteValidada = true
+              
+              // Mantener productStockData REAL para que la IA tenga contexto
+              context.productStockData = productStockData
+            } else {
+              // No hay variantes REALES - no inventar
+              console.log(`[WooCommerce] ⚠️ No se encontraron variantes REALES para "${atributoNormalizado}"`)
+              context.varianteValidada = false
             }
           }
         } else {
