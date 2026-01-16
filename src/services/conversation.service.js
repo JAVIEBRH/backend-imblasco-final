@@ -2020,7 +2020,82 @@ Responde de forma apropiada según la consulta del cliente. Usa tu criterio para
       
     } else if (queryType === 'VARIANTE') {
       // Consulta sobre variante específica (color, tamaño, etc.)
-      if (productStockData && context.varianteValidada === true) {
+      // CASO 1: Listar variantes disponibles (cuando se pregunta "qué colores tiene" sin especificar color)
+      if (context.variantesDisponibles && context.variantesDisponibles.valores && context.variantesDisponibles.valores.length > 0) {
+        // Validar que el producto sea REAL
+        if (!validarProductoReal(productStockData)) {
+          textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
+
+SITUACIÓN:
+El cliente preguntó: "${message}"
+No se encontró el producto en WooCommerce.
+
+🎯 OBJETIVO:
+Informa al cliente de forma empática que no se encontró el producto.
+
+💡 LIBERTAD PARA REDACTAR:
+- Puedes ser empático y ofrecer ayuda
+- Puedes sugerir que verifique el nombre o SKU del producto
+- Adapta el tono según el contexto
+
+🚫 RESTRICCIONES:
+- NO inventes productos o información`
+        } else {
+          // Producto REAL - construir respuesta con datos REALES
+          let stockInfo = ''
+          if (validarDatoNumerico(productStockData.stock_quantity)) {
+            const stockQty = parseInt(productStockData.stock_quantity)
+            stockInfo = stockQty > 0 
+              ? `${stockQty} unidad${stockQty > 1 ? 'es' : ''} disponible${stockQty > 1 ? 's' : ''}`
+              : 'Stock agotado (0 unidades)'
+          } else if (productStockData.stock_status === 'instock') {
+            stockInfo = 'disponible en stock'
+          } else {
+            stockInfo = 'N/A'
+          }
+          
+          const priceInfo = validarDatoNumerico(productStockData.price) 
+            ? `$${parseFloat(productStockData.price).toLocaleString('es-CL')}` 
+            : 'N/A'
+          
+          const atributo = context.variantesDisponibles.atributo || 'atributo'
+          const valores = context.variantesDisponibles.valores
+          const valoresStr = valores.join(', ')
+          
+          const historyContext = getHistoryContext(session)
+          
+          textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
+
+📦 DATOS REALES DEL PRODUCTO (consultados desde WooCommerce en tiempo real):
+- Nombre: ${productStockData.name || 'N/A'}
+- SKU: ${productStockData.sku || 'N/A'}
+- Stock: ${stockInfo}
+- Precio: ${priceInfo}
+- ${atributo.charAt(0).toUpperCase() + atributo.slice(1)}s disponibles: ${valoresStr}
+
+El cliente preguntó: "${message}"${historyContext}
+
+🎯 OBJETIVO:
+Presenta los ${atributo}s disponibles de forma clara y útil para el cliente.
+
+✅ DATOS QUE DEBES USAR (OBLIGATORIO):
+- Lista SOLO los ${atributo}s proporcionados arriba: ${valoresStr}
+- Incluye stock: ${stockInfo} (usa este valor exacto)
+- Incluye precio si está disponible: ${priceInfo}
+- NO cambies nombres, SKUs, precios ni valores de ${atributo}
+
+💡 LIBERTAD PARA REDACTAR:
+- Puedes presentar los ${atributo}s de forma natural (lista, texto, agrupados)
+- Puedes destacar los más relevantes si hay muchos
+- Puedes adaptar el tono según el contexto
+- Puedes sugerir el ${atributo} más popular o disponible si es relevante
+
+🚫 RESTRICCIONES CRÍTICAS:
+- NO inventes ${atributo}s que no estén en la lista: ${valoresStr}
+- NO cambies los valores de stock, precio, SKU o ${atributo}
+- NO digas "disponible" si el stock es 0 o "Stock agotado (0 unidades)"`
+        }
+      } else if (productStockData && context.varianteValidada === true) {
         // Variante existe y está validada
         let stockInfo = ''
         if (productStockData.stock_quantity !== null && productStockData.stock_quantity !== undefined) {
