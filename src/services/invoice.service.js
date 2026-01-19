@@ -1,12 +1,13 @@
 /**
- * INVOICE SERVICE
+ * INVOICE SERVICE (MongoDB)
  * Servicio completo de facturación
  */
 
-import { query, getClient } from '../config/database.js'
+import { Invoice } from '../models/index.js'
 import * as orderService from './order.service.js'
 import * as clientService from './client.service.js'
 import { calculateInvoiceAmounts } from './order-invoicing.service.js'
+import mongoose from '../config/database.js'
 
 /**
  * Generar número de factura secuencial
@@ -17,17 +18,15 @@ async function generateInvoiceNumber() {
   const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '')
   
   // Obtener el último número del día
-  const result = await query(
-    `SELECT invoice_number FROM invoices 
-     WHERE invoice_number LIKE $1 
-     ORDER BY invoice_number DESC 
-     LIMIT 1`,
-    [`FAC-${dateStr}-%`]
-  )
+  const lastInvoice = await Invoice.findOne({
+    invoice_number: { $regex: `^FAC-${dateStr}-` }
+  })
+    .sort({ invoice_number: -1 })
+    .lean()
 
   let sequence = 1
-  if (result.rows.length > 0) {
-    const lastNumber = result.rows[0].invoice_number
+  if (lastInvoice) {
+    const lastNumber = lastInvoice.invoice_number
     const lastSeq = parseInt(lastNumber.split('-')[2]) || 0
     sequence = lastSeq + 1
   }
@@ -37,17 +36,13 @@ async function generateInvoiceNumber() {
 
 /**
  * Crear factura desde un pedido
- * @param {number} orderId - ID del pedido
+ * @param {string|number} orderId - ID del pedido
  * @param {string} invoiceType - Tipo de factura (factura, boleta)
  * @param {Object} options - Opciones adicionales
  * @returns {Promise<Object>} Factura creada
  */
 export async function createInvoiceFromOrder(orderId, invoiceType = 'factura', options = {}) {
-  const client = await getClient()
-  
   try {
-    await client.query('BEGIN')
-
     // Obtener pedido
     const order = await orderService.getOrder(orderId)
     if (!order) {
@@ -59,12 +54,12 @@ export async function createInvoiceFromOrder(orderId, invoiceType = 'factura', o
     }
 
     // Verificar que no exista factura para este pedido
-    const existingInvoice = await query(
-      'SELECT id FROM invoices WHERE order_id = $1 AND status != $2',
-      [orderId, 'cancelled']
-    )
+    const existingInvoice = await Invoice.findOne({
+      order_id: orderId.toString(),
+      status: { $ne: 'cancelled' }
+    }).lean()
 
-    if (existingInvoice.rows.length > 0) {
+    if (existingInvoice) {
       throw new Error('Ya existe una factura para este pedido')
     }
 
@@ -79,79 +74,31 @@ export async function createInvoiceFromOrder(orderId, invoiceType = 'factura', o
     const invoiceNumber = await generateInvoiceNumber()
 
     // Crear factura
-    const invoiceResult = await client.query(
-      `INSERT INTO invoices (
-        invoice_number, order_id, client_id, invoice_type, status,
-        net_amount, iva_amount, total_amount,
-        client_rut, client_name, client_address, client_commune,
-        issue_date, due_date, created_by
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-      RETURNING *`,
-      [
-        invoiceNumber,
-        orderId,
-        order.userId,
-        invoiceType,
-        'issued',
-        netAmount,
-        ivaAmount,
-        totalAmount,
-        clientData.rut,
-        clientData.razon_social,
-        `${clientData.direccion}, ${clientData.comuna}`,
-        clientData.comuna,
-        new Date(),
-        options.dueDate || null,
-        options.createdBy || 'system'
-      ]
-    )
-
-    const invoice = invoiceResult.rows[0]
-
-    // Crear items de factura
-    for (const item of order.items || []) {
-      await client.query(
-        `INSERT INTO invoice_items (
-          invoice_id, sku, product_name, quantity, unit_price, subtotal
-        ) VALUES ($1, $2, $3, $4, $5, $6)`,
-        [
-          invoice.id,
-          item.codigo || item.sku,
-          item.nombre || item.productName,
-          item.cantidad || item.quantity,
-          item.precioUnitario || item.unitPrice,
-          item.subtotal
-        ]
-      )
-    }
-
-    // Crear cuenta por cobrar
-    await client.query(
-      `INSERT INTO accounts_receivable (
-        invoice_id, client_id, original_amount, balance, due_date, status
-      ) VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        invoice.id,
-        order.userId,
-        totalAmount,
-        totalAmount,
-        options.dueDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 días por defecto
-        'pending'
-      ]
-    )
+    const invoice = await Invoice.create({
+      invoice_number: invoiceNumber,
+      order_id: orderId.toString(),
+      client_id: order.userId,
+      invoice_type: invoiceType,
+      status: 'issued',
+      net_amount: netAmount,
+      iva_amount: ivaAmount,
+      total_amount: totalAmount,
+      client_rut: clientData.rut,
+      client_name: clientData.razon_social,
+      client_address: `${clientData.direccion}, ${clientData.comuna}`,
+      client_commune: clientData.comuna,
+      issue_date: new Date(),
+      due_date: options.dueDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 días por defecto
+      created_by: options.createdBy || 'system'
+    })
 
     // Actualizar estado del pedido
     await orderService.updateOrderStatus(orderId, 'invoiced')
 
-    await client.query('COMMIT')
-
-    return await getInvoice(invoice.id)
-
+    return await getInvoice(invoice._id.toString())
   } catch (error) {
-    await client.query('ROLLBACK')
+    console.error('[INVOICE] Error creating invoice:', error)
     throw error
-  } finally {
-    client.release()
   }
 }
 
@@ -159,42 +106,46 @@ export async function createInvoiceFromOrder(orderId, invoiceType = 'factura', o
  * Obtener factura por ID
  */
 export async function getInvoice(invoiceId) {
-  const result = await query(
-    `SELECT i.*, 
-            COALESCE(json_agg(ii.* ORDER BY ii.id) FILTER (WHERE ii.id IS NOT NULL), '[]') as items
-     FROM invoices i
-     LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
-     WHERE i.id = $1
-     GROUP BY i.id`,
-    [invoiceId]
-  )
+  try {
+    let invoice = null
+    
+    if (mongoose.Types.ObjectId.isValid(invoiceId)) {
+      invoice = await Invoice.findById(invoiceId).lean()
+    } else {
+      invoice = await Invoice.findOne({ invoice_number: invoiceId }).lean()
+    }
+    
+    if (!invoice) return null
 
-  if (result.rows.length === 0) return null
+    // Obtener items del pedido asociado
+    const order = await orderService.getOrder(invoice.order_id)
+    const items = order?.items || []
 
-  const row = result.rows[0]
-  return {
-    id: row.id,
-    invoiceNumber: row.invoice_number,
-    orderId: row.order_id,
-    clientId: row.client_id,
-    invoiceType: row.invoice_type,
-    status: row.status,
-    netAmount: parseFloat(row.net_amount),
-    ivaAmount: parseFloat(row.iva_amount),
-    totalAmount: parseFloat(row.total_amount),
-    clientRut: row.client_rut,
-    clientName: row.client_name,
-    clientAddress: row.client_address,
-    clientCommune: row.client_commune,
-    issueDate: row.issue_date,
-    dueDate: row.due_date,
-    paidDate: row.paid_date,
-    erpReference: row.erp_reference,
-    siiFolio: row.sii_folio,
-    notes: row.notes,
-    items: Array.isArray(row.items) ? row.items : (row.items ? [row.items] : []),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
+    return {
+      id: invoice._id.toString(),
+      invoiceNumber: invoice.invoice_number,
+      orderId: invoice.order_id,
+      clientId: invoice.client_id,
+      invoiceType: invoice.invoice_type,
+      status: invoice.status,
+      netAmount: parseFloat(invoice.net_amount),
+      ivaAmount: parseFloat(invoice.iva_amount),
+      totalAmount: parseFloat(invoice.total_amount),
+      clientRut: invoice.client_rut,
+      clientName: invoice.client_name,
+      clientAddress: invoice.client_address,
+      clientCommune: invoice.client_commune,
+      issueDate: invoice.issue_date,
+      dueDate: invoice.due_date,
+      paidDate: invoice.paid_date,
+      notes: invoice.notes || '',
+      items: items,
+      createdAt: invoice.createdAt,
+      updatedAt: invoice.updatedAt
+    }
+  } catch (error) {
+    console.error('[INVOICE] Error getting invoice:', error)
+    return null
   }
 }
 
@@ -202,107 +153,94 @@ export async function getInvoice(invoiceId) {
  * Obtener todas las facturas
  */
 export async function getAllInvoices(filters = {}) {
-  let sql = `SELECT i.*, 
-                    COALESCE(json_agg(ii.* ORDER BY ii.id) FILTER (WHERE ii.id IS NOT NULL), '[]') as items
-             FROM invoices i
-             LEFT JOIN invoice_items ii ON i.id = ii.invoice_id`
-  
-  const conditions = []
-  const params = []
-  let paramCount = 1
+  try {
+    const query = {}
 
-  if (filters.status) {
-    conditions.push(`i.status = $${paramCount}`)
-    params.push(filters.status)
-    paramCount++
+    if (filters.status) {
+      query.status = filters.status
+    }
+
+    if (filters.clientId) {
+      query.client_id = filters.clientId
+    }
+
+    if (filters.dateFrom || filters.dateTo) {
+      query.issue_date = {}
+      if (filters.dateFrom) {
+        query.issue_date.$gte = new Date(filters.dateFrom)
+      }
+      if (filters.dateTo) {
+        query.issue_date.$lte = new Date(filters.dateTo)
+      }
+    }
+
+    const invoices = await Invoice.find(query)
+      .sort({ issue_date: -1, invoice_number: -1 })
+      .lean()
+
+    return invoices.map(invoice => ({
+      id: invoice._id.toString(),
+      invoiceNumber: invoice.invoice_number,
+      orderId: invoice.order_id,
+      clientId: invoice.client_id,
+      invoiceType: invoice.invoice_type,
+      status: invoice.status,
+      netAmount: parseFloat(invoice.net_amount),
+      ivaAmount: parseFloat(invoice.iva_amount),
+      totalAmount: parseFloat(invoice.total_amount),
+      clientName: invoice.client_name,
+      issueDate: invoice.issue_date,
+      dueDate: invoice.due_date,
+      totalItems: 0, // Se puede calcular desde el pedido si es necesario
+      createdAt: invoice.createdAt
+    }))
+  } catch (error) {
+    console.error('[INVOICE] Error getting all invoices:', error)
+    return []
   }
-
-  if (filters.clientId) {
-    conditions.push(`i.client_id = $${paramCount}`)
-    params.push(filters.clientId)
-    paramCount++
-  }
-
-  if (filters.dateFrom) {
-    conditions.push(`i.issue_date >= $${paramCount}`)
-    params.push(filters.dateFrom)
-    paramCount++
-  }
-
-  if (filters.dateTo) {
-    conditions.push(`i.issue_date <= $${paramCount}`)
-    params.push(filters.dateTo)
-    paramCount++
-  }
-
-  if (conditions.length > 0) {
-    sql += ' WHERE ' + conditions.join(' AND ')
-  }
-
-  sql += ' GROUP BY i.id ORDER BY i.issue_date DESC, i.invoice_number DESC'
-
-  const result = await query(sql, params)
-  return result.rows.map(row => ({
-    id: row.id,
-    invoiceNumber: row.invoice_number,
-    orderId: row.order_id,
-    clientId: row.client_id,
-    invoiceType: row.invoice_type,
-    status: row.status,
-    netAmount: parseFloat(row.net_amount),
-    ivaAmount: parseFloat(row.iva_amount),
-    totalAmount: parseFloat(row.total_amount),
-    clientName: row.client_name,
-    issueDate: row.issue_date,
-    dueDate: row.due_date,
-    totalItems: Array.isArray(row.items) ? row.items.length : 0,
-    createdAt: row.created_at
-  }))
 }
 
 /**
  * Cancelar factura
  */
 export async function cancelInvoice(invoiceId, reason) {
-  const client = await getClient()
-  
   try {
-    await client.query('BEGIN')
-
-    // Verificar que la factura existe y no esté cancelada
-    const invoice = await getInvoice(invoiceId)
+    let invoice = null
+    
+    if (mongoose.Types.ObjectId.isValid(invoiceId)) {
+      invoice = await Invoice.findByIdAndUpdate(
+        invoiceId,
+        {
+          $set: {
+            status: 'cancelled',
+            notes: reason ? `Cancelada: ${reason}` : 'Cancelada: Sin razón especificada',
+            updatedAt: new Date()
+          }
+        },
+        { new: true }
+      ).lean()
+    } else {
+      invoice = await Invoice.findOneAndUpdate(
+        { invoice_number: invoiceId },
+        {
+          $set: {
+            status: 'cancelled',
+            notes: reason ? `Cancelada: ${reason}` : 'Cancelada: Sin razón especificada',
+            updatedAt: new Date()
+          }
+        },
+        { new: true }
+      ).lean()
+    }
+    
     if (!invoice) {
       throw new Error('Factura no encontrada')
     }
 
-    if (invoice.status === 'cancelled') {
-      throw new Error('La factura ya está cancelada')
-    }
-
-    // Actualizar factura
-    await client.query(
-      `UPDATE invoices 
-       SET status = 'cancelled', notes = COALESCE(notes || E'\n', '') || $1, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $2`,
-      [`Cancelada: ${reason || 'Sin razón especificada'}`, invoiceId]
-    )
-
-    // Actualizar cuenta por cobrar
-    await client.query(
-      `UPDATE accounts_receivable 
-       SET status = 'written_off', balance = 0
-       WHERE invoice_id = $1`,
-      [invoiceId]
-    )
-
-    await client.query('COMMIT')
-    return await getInvoice(invoiceId)
-
+    return await getInvoice(invoice._id?.toString() || invoiceId)
   } catch (error) {
-    await client.query('ROLLBACK')
+    console.error('[INVOICE] Error cancelling invoice:', error)
     throw error
-  } finally {
-    client.release()
   }
 }
 
@@ -352,5 +290,3 @@ export default {
   cancelInvoice,
   generateInvoicePDF
 }
-
-

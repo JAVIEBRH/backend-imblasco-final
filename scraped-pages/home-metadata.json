@@ -1,0 +1,15 @@
+{
+  "page": "home",
+  "url": "https://imblasco.cl/",
+  "scrapedAt": "2026-01-17T22:17:35.497Z",
+  "resources": {
+    "css": 82,
+    "js": 58,
+    "images": 407,
+    "fonts": 4
+  },
+  "styles": {
+    "inlineSheets": 21,
+    "inlineElements": 297
+  }
+}

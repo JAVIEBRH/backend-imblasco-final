@@ -1,0 +1,154 @@
+@font-face {
+	font-weight: normal;
+	font-style: normal;
+	font-family: "woodmart-font";
+	src: url("../fonts/woodmart-font-1-400.woff2") format("woff2");
+}
+
+:root {
+	--wd-text-font: "Cabin", Arial, Helvetica, sans-serif;
+	--wd-text-font-weight: 400;
+	--wd-text-color: #777777;
+	--wd-text-font-size: 14px;
+	--wd-title-font: "Cabin", Arial, Helvetica, sans-serif;
+	--wd-title-font-weight: 600;
+	--wd-title-color: #242424;
+	--wd-entities-title-font: "Cabin", Arial, Helvetica, sans-serif;
+	--wd-entities-title-font-weight: 600;
+	--wd-entities-title-color: #333333;
+	--wd-entities-title-color-hover: rgb(51 51 51 / 65%);
+	--wd-alternative-font: "Lato", Arial, Helvetica, sans-serif;
+	--wd-widget-title-font: "Cabin", Arial, Helvetica, sans-serif;
+	--wd-widget-title-font-weight: 600;
+	--wd-widget-title-transform: uppercase;
+	--wd-widget-title-color: #333;
+	--wd-widget-title-font-size: 16px;
+	--wd-header-el-font: "Lato", Arial, Helvetica, sans-serif;
+	--wd-header-el-font-weight: 700;
+	--wd-header-el-transform: uppercase;
+	--wd-header-el-font-size: 13px;
+	--wd-primary-color: rgb(244,165,28);
+	--wd-alternative-color: #fbbc34;
+	--wd-link-color: #333333;
+	--wd-link-color-hover: #242424;
+	--btn-default-bgcolor: #f7f7f7;
+	--btn-default-bgcolor-hover: #efefef;
+	--btn-accented-bgcolor: rgb(244,165,28);
+	--btn-accented-bgcolor-hover: rgb(222,150,26);
+	--wd-form-brd-width: 2px;
+	--notices-success-bg: #459647;
+	--notices-success-color: #fff;
+	--notices-warning-bg: #E0B252;
+	--notices-warning-color: #fff;
+}
+.woodmart-woocommerce-layered-nav .wd-scroll-content {
+	max-height: 223px;
+}
+.wd-popup.wd-age-verify {
+	--wd-popup-width: 500px;
+}
+.wd-popup.wd-promo-popup {
+	background-color: rgb(255,255,255);
+	background-image: url(../images/retail-popup-bg.jpg);
+	background-repeat: no-repeat;
+	background-size: cover;
+	background-position: center center;
+	--wd-popup-width: 800px;
+}
+.page-title-default {
+	background-color: #0a0a0a;
+	background-image: none;
+	background-size: cover;
+	background-position: center center;
+}
+.footer-container {
+	background-color: rgb(9,33,67);
+	background-image: none;
+}
+html .product.category-grid-item .wd-entities-title, html .product.category-grid-item.cat-design-replace-title .wd-entities-title, html .wd-masonry-first .category-grid-item:first-child .wd-entities-title, html .product.wd-cat .wd-entities-title {
+	font-size: 16px;
+}
+.wd-popup.popup-quick-view {
+	--wd-popup-width: 920px;
+}
+.woocommerce-product-gallery {
+	--wd-gallery-gap: 0px;
+}
+:root{
+--wd-container-w: 1222px;
+--wd-form-brd-radius: 35px;
+--btn-default-color: #333;
+--btn-default-color-hover: #333;
+--btn-accented-color: #fff;
+--btn-accented-color-hover: #fff;
+--btn-default-brd-radius: 35px;
+--btn-default-box-shadow: none;
+--btn-default-box-shadow-hover: none;
+--btn-accented-brd-radius: 35px;
+--btn-accented-box-shadow: none;
+--btn-accented-box-shadow-hover: none;
+--wd-brd-radius: 0px;
+}
+
+@media (min-width: 1239px) {
+.platform-Windows .wd-section-stretch > .elementor-container {
+margin-left: auto;
+margin-right: auto;
+}
+}
+
+@media (min-width: 1222px) {
+html:not(.platform-Windows) .wd-section-stretch > .elementor-container {
+margin-left: auto;
+margin-right: auto;
+}
+}
+
+
+.wd-prefooter {
+		display:none;
+}
+.breadcrumbs-location-below_header .single-breadcrumbs-wrapper {
+    margin-block: 0px 25px !important;
+}
+
+.page-title .container {
+    margin-block: 35px;
+}
+.wd-add-btn.wd-add-btn-replace.woodmart-add-btn {
+    display: none;
+}
+
+.woocommerce-variation-add-to-cart.variations_button.woocommerce-variation-add-to-cart-disabled {
+    display: none;
+}
+
+
+.variations_form .variations td {
+    width: auto !important; /* Permite que el ancho se ajuste mejor */
+    font-size: 10px; /* Aumenta el tamaño del texto */
+    padding: 15px; /* Añade espacio interno */
+}
+
+.variations_form .variations {
+    display: flex;
+    flex-direction: column; /* Hace que los elementos se organicen en columna */
+    align-items: start; /* Alinea el texto a la izquierda */
+    width: 100%; /* Expande el recuadro en toda la anchura posible */
+}
+
+.variations_form .variations select {
+    font-size: 16px; /* Aumenta el tamaño del texto en los selectores */
+    padding: 8px;
+    width: 100%; /* Hace que los selectores ocupen el ancho del recuadro */
+}
+
+.variations_form .variations label {
+    font-weight: bold; /* Resalta los títulos como Tamaño, Color, etc. */
+}
+@media (min-width: 1025px) {
+	.whb-sticky-header .whb-clone .whb-main-header .whb-hide-on-scroll .whb-sticked .whb-scroll-up {
+	display: none;
+}
+}
+

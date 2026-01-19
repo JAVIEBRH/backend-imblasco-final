@@ -1,0 +1,26 @@
+{
+	"folders": [
+		{
+			"name": "Backend",
+			"path": "C:\\Users\\Javier\\backend imblasco jsreact funcional\\IMBLASCOASISTENTEBACKEND"
+		},
+		{
+			"name": "Frontend",
+			"path": "C:\\Users\\Javier\\frontend imblsco jsreact funcional\\IMBLASCOASISTENTEFRONTEND"
+		}
+	],
+	"settings": {
+		"files.exclude": {
+			"**/.git": false,
+			"**/node_modules": true
+		},
+		"search.exclude": {
+			"**/node_modules": true,
+			"**/dist": true,
+			"**/build": true
+		}
+	},
+	"extensions": {
+		"recommendations": []
+	}
+}

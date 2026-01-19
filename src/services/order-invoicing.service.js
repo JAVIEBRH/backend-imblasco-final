@@ -1,14 +1,15 @@
 /**
- * ORDER INVOICING SERVICE (EXTENSIÓN)
+ * ORDER INVOICING SERVICE (EXTENSIÓN) - MongoDB
  * Servicios adicionales para facturación
  * 
  * Este módulo EXTENDEN order.service.js sin modificarlo.
  * Agrega funcionalidades de facturación de forma desacoplada.
  */
 
-import { query, getClient } from '../config/database.js'
+import { Order } from '../models/index.js'
 import * as clientService from './client.service.js'
 import { erpAdapter } from '../erp/index.js'
+import mongoose from '../config/database.js'
 
 // IVA en Chile
 const IVA_RATE = 0.19
@@ -32,17 +33,13 @@ export function calculateInvoiceAmounts(netAmount) {
 /**
  * Actualizar pedido con datos de facturación
  * Se llama DESPUÉS de crear el pedido para agregar datos de facturación
- * @param {number} orderId - ID numérico del pedido
+ * @param {string} orderId - ID del pedido (puede ser _id o order_id)
  * @param {string} userId - ID del usuario
  * @param {Array} items - Items del pedido
  * @returns {Promise<Object>} Pedido actualizado
  */
 export async function enrichOrderWithInvoicingData(orderId, userId, items) {
-  const client = await getClient()
-  
   try {
-    await client.query('BEGIN')
-    
     // 1. Obtener snapshot del cliente
     const clientSnapshot = await clientService.createClientSnapshot(userId)
     
@@ -59,44 +56,52 @@ export async function enrichOrderWithInvoicingData(orderId, userId, items) {
     const netAmount = itemsSnapshot.reduce((sum, item) => sum + item.subtotal, 0)
     const { ivaAmount, totalAmount } = calculateInvoiceAmounts(netAmount)
     
-    // 4. Actualizar pedido con datos de facturación
-    const result = await client.query(
-      `UPDATE orders 
-       SET net_amount = $1,
-           iva_amount = $2,
-           total_amount = $3,
-           client_snapshot = $4,
-           items_snapshot = $5,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $6
-       RETURNING *`,
-      [
-        netAmount,
-        ivaAmount,
-        totalAmount,
-        JSON.stringify(clientSnapshot),
-        JSON.stringify(itemsSnapshot),
-        orderId
-      ]
-    )
-    
-    if (result.rows.length === 0) {
-      throw new Error(`Pedido ${orderId} no encontrado`)
+    // 4. Buscar pedido (puede ser por _id o order_id)
+    let order = null
+    if (mongoose.Types.ObjectId.isValid(orderId)) {
+      order = await Order.findByIdAndUpdate(
+        orderId,
+        {
+          $set: {
+            net_amount: netAmount,
+            iva_amount: ivaAmount,
+            total_amount: totalAmount,
+            client_snapshot: clientSnapshot,
+            items_snapshot: itemsSnapshot,
+            updatedAt: new Date()
+          }
+        },
+        { new: true }
+      )
+    } else {
+      order = await Order.findOneAndUpdate(
+        { order_id: orderId },
+        {
+          $set: {
+            net_amount: netAmount,
+            iva_amount: ivaAmount,
+            total_amount: totalAmount,
+            client_snapshot: clientSnapshot,
+            items_snapshot: itemsSnapshot,
+            updatedAt: new Date()
+          }
+        },
+        { new: true }
+      )
     }
     
-    await client.query('COMMIT')
+    if (!order) {
+      throw new Error(`Pedido ${orderId} no encontrado`)
+    }
     
     console.log(`[INVOICING] Pedido ${orderId} enriquecido con datos de facturación`)
     console.log(`  Neto: $${netAmount.toLocaleString()}, IVA: $${ivaAmount.toLocaleString()}, Total: $${totalAmount.toLocaleString()}`)
     
-    return result.rows[0]
+    return order.toObject()
     
   } catch (error) {
-    await client.query('ROLLBACK')
     console.error('[INVOICING] Error enriqueciendo pedido:', error)
     throw error
-  } finally {
-    client.release()
   }
 }
 
@@ -123,31 +128,22 @@ export function validateStatusTransition(currentStatus, newStatus) {
 
 /**
  * Enviar pedido al ERP
- * @param {number} orderId - ID numérico del pedido
+ * @param {string|number} orderId - ID del pedido
  * @returns {Promise<Object>} Resultado del envío
  */
 export async function sendOrderToErp(orderId) {
-  const client = await getClient()
-  
   try {
-    await client.query('BEGIN')
-    
-    // 1. Obtener pedido completo
-    const orderResult = await client.query(
-      `SELECT o.*, 
-              COALESCE(json_agg(oi.* ORDER BY oi.id) FILTER (WHERE oi.id IS NOT NULL), '[]') as items
-       FROM orders o
-       LEFT JOIN order_items oi ON o.id = oi.order_id
-       WHERE o.id = $1
-       GROUP BY o.id`,
-      [orderId]
-    )
-    
-    if (orderResult.rows.length === 0) {
-      throw new Error(`Pedido ${orderId} no encontrado`)
+    // 1. Buscar pedido
+    let order = null
+    if (mongoose.Types.ObjectId.isValid(orderId)) {
+      order = await Order.findById(orderId).lean()
+    } else {
+      order = await Order.findOne({ order_id: orderId.toString() }).lean()
     }
     
-    const order = orderResult.rows[0]
+    if (!order) {
+      throw new Error(`Pedido ${orderId} no encontrado`)
+    }
     
     // 2. Validar estado
     if (order.status !== 'confirmed') {
@@ -162,100 +158,97 @@ export async function sendOrderToErp(orderId) {
     
     if (!erpResult.success) {
       // Si falla, cambiar a error
-      await client.query(
-        `UPDATE orders 
-         SET status = 'error', updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1`,
-        [orderId]
+      const orderIdToUpdate = order._id || orderId
+      await Order.findByIdAndUpdate(
+        orderIdToUpdate,
+        {
+          $set: {
+            status: 'error',
+            updatedAt: new Date()
+          }
+        }
       )
-      await client.query('COMMIT')
       
       throw new Error(`Error enviando al ERP: ${erpResult.message || 'Error desconocido'}`)
     }
     
     // 5. Actualizar pedido con referencia ERP y nuevo estado
-    await client.query(
-      `UPDATE orders 
-       SET status = 'sent_to_erp',
-           erp_reference = $1,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $2`,
-      [erpResult.erpReference, orderId]
+    const orderIdToUpdate = order._id || orderId
+    await Order.findByIdAndUpdate(
+      orderIdToUpdate,
+      {
+        $set: {
+          status: 'sent_to_erp',
+          erp_reference: erpResult.erpReference,
+          updatedAt: new Date()
+        }
+      }
     )
-    
-    await client.query('COMMIT')
     
     console.log(`[ERP] Pedido ${orderId} enviado al ERP. Referencia: ${erpResult.erpReference}`)
     
     return {
       success: true,
-      orderId,
+      orderId: order._id?.toString() || orderId,
       erpReference: erpResult.erpReference,
       status: 'sent_to_erp'
     }
     
   } catch (error) {
-    await client.query('ROLLBACK')
     console.error('[ERP] Error enviando pedido al ERP:', error)
     throw error
-  } finally {
-    client.release()
   }
 }
 
 /**
  * Construir documento facturable para el ERP
- * @param {Object} order - Pedido de BD
+ * @param {Object} order - Pedido de MongoDB
  * @returns {Object} Documento facturable
  */
 function buildInvoiceDocument(order) {
-  const items = Array.isArray(order.items) ? order.items : (order.items ? [order.items] : [])
+  const items = order.items || []
   
   return {
-    orderId: `PED-${order.id.toString().padStart(6, '0')}`,
-    dbId: order.id,
+    orderId: order.order_id || `PED-${order._id?.toString().slice(-6)}`,
+    dbId: order._id?.toString() || order.id,
     userId: order.user_id,
     client: order.client_snapshot || {},
     items: items.map(item => ({
-      sku: item.sku,
-      nombre: item.product_name,
-      cantidad: item.quantity,
-      precioUnitario: parseFloat(item.unit_price || 0),
+      sku: item.codigo,
+      nombre: item.nombre,
+      cantidad: item.cantidad,
+      precioUnitario: parseFloat(item.precio || 0),
       subtotal: parseFloat(item.subtotal || 0)
     })),
     amounts: {
-      netAmount: parseFloat(order.net_amount || order.total || 0),
+      netAmount: parseFloat(order.net_amount || order.total_amount || 0),
       ivaAmount: parseFloat(order.iva_amount || 0),
-      totalAmount: parseFloat(order.total_amount || order.total || 0)
+      totalAmount: parseFloat(order.total_amount || order.total_amount || 0)
     },
-    createdAt: order.created_at,
+    createdAt: order.createdAt,
     itemsSnapshot: order.items_snapshot || null
   }
 }
 
 /**
  * Marcar pedido como facturado (llamado por webhook del ERP)
- * @param {number} orderId - ID numérico del pedido
+ * @param {string|number} orderId - ID del pedido
  * @param {string} erpReference - Referencia del ERP (opcional, para validar)
  * @returns {Promise<Object>} Pedido actualizado
  */
 export async function markOrderAsInvoiced(orderId, erpReference = null) {
-  const client = await getClient()
-  
   try {
-    await client.query('BEGIN')
-    
-    // Validar que el pedido existe y está en estado correcto
-    const orderResult = await client.query(
-      `SELECT * FROM orders WHERE id = $1`,
-      [orderId]
-    )
-    
-    if (orderResult.rows.length === 0) {
-      throw new Error(`Pedido ${orderId} no encontrado`)
+    // Buscar pedido
+    let order = null
+    if (mongoose.Types.ObjectId.isValid(orderId)) {
+      order = await Order.findById(orderId).lean()
+    } else {
+      order = await Order.findOne({ order_id: orderId.toString() }).lean()
     }
     
-    const order = orderResult.rows[0]
+    if (!order) {
+      throw new Error(`Pedido ${orderId} no encontrado`)
+    }
     
     if (order.status !== 'sent_to_erp') {
       throw new Error(`Pedido debe estar en estado 'sent_to_erp'. Estado actual: ${order.status}`)
@@ -266,31 +259,29 @@ export async function markOrderAsInvoiced(orderId, erpReference = null) {
     }
     
     // Actualizar estado
-    const result = await client.query(
-      `UPDATE orders 
-       SET status = 'invoiced',
-           invoiced_at = CURRENT_TIMESTAMP,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1
-       RETURNING *`,
-      [orderId]
-    )
-    
-    await client.query('COMMIT')
+    const orderIdToUpdate = order._id || orderId
+    const updatedOrder = await Order.findByIdAndUpdate(
+      orderIdToUpdate,
+      {
+        $set: {
+          status: 'invoiced',
+          invoiced_at: new Date(),
+          updatedAt: new Date()
+        }
+      },
+      { new: true }
+    ).lean()
     
     console.log(`[INVOICING] Pedido ${orderId} marcado como facturado`)
     
     // Hook: Notificar cambio de estado (email, webhook, etc.)
-    await notifyOrderInvoiced(result.rows[0])
+    await notifyOrderInvoiced(updatedOrder)
     
-    return result.rows[0]
+    return updatedOrder
     
   } catch (error) {
-    await client.query('ROLLBACK')
     console.error('[INVOICING] Error marcando pedido como facturado:', error)
     throw error
-  } finally {
-    client.release()
   }
 }
 
@@ -300,7 +291,7 @@ export async function markOrderAsInvoiced(orderId, erpReference = null) {
  */
 async function notifyOrderInvoiced(order) {
   // TODO: Implementar notificación real (email, webhook, etc.)
-  console.log(`[HOOK] Pedido ${order.id} facturado. Hook de notificación llamado.`)
+  console.log(`[HOOK] Pedido ${order._id || order.id} facturado. Hook de notificación llamado.`)
   
   // Por ahora solo log
   // En producción: llamar a EmailService, WebhookService, etc.
@@ -313,5 +304,3 @@ export default {
   sendOrderToErp,
   markOrderAsInvoiced
 }
-
-

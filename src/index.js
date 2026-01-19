@@ -8,9 +8,6 @@
  * - GET  /api/stock/:sku       → Buscar producto por SKU
  * - POST /api/chat/message     → Enviar mensaje al chat
  * - GET  /api/chat/history/:userId → Historial de chat
- * - GET  /api/cart/:userId     → Obtener carrito
- * - POST /api/order/confirm    → Confirmar pedido
- * - GET  /api/orders/:userId   → Historial de pedidos
  */
 
 // CARGAR .env PRIMERO, ANTES DE CUALQUIER OTRO MÓDULO
@@ -48,20 +45,8 @@ if (process.env.NODE_ENV === "production") {
 console.log("🔍 Variables de entorno disponibles:");
 console.log("  NODE_ENV:", process.env.NODE_ENV || "no definido");
 console.log(
-  "  DB_HOST:",
-  process.env.DB_HOST ? "✅ definido" : "❌ no definido"
-);
-console.log(
-  "  DB_NAME:",
-  process.env.DB_NAME ? "✅ definido" : "❌ no definido"
-);
-console.log(
-  "  DB_USER:",
-  process.env.DB_USER ? "✅ definido" : "❌ no definido"
-);
-console.log(
-  "  DB_PASSWORD:",
-  process.env.DB_PASSWORD ? "✅ definido" : "❌ no definido"
+  "  DATABASE_URL:",
+  process.env.DATABASE_URL ? "✅ definido" : "❌ no definido"
 );
 console.log(
   "  OPENAI_API_KEY:",
@@ -92,15 +77,11 @@ import express from "express";
 import cors from "cors";
 import { stockRouter } from "./routes/stock.routes.js";
 import { chatRouter } from "./routes/chat.routes.js";
-import { cartRouter } from "./routes/cart.routes.js";
-import { orderRouter } from "./routes/order.routes.js";
 import { authRouter } from "./routes/auth.routes.js";
 import { indexRouter } from "./routes/index.routes.js";
-import { invoiceRouter } from "./routes/invoice.routes.js";
-import { paymentRouter } from "./routes/payment.routes.js";
 import { clientRouter } from "./routes/client.routes.js";
 import { reportRouter } from "./routes/report.routes.js";
-import { testConnection } from "./config/database.js";
+import { testConnection, connect } from "./config/database.js";
 import { errorHandler, notFound } from "./middleware/errorHandler.js";
 
 const app = express();
@@ -112,6 +93,7 @@ app.use(
     origin: [
       "http://localhost:3000",
       "http://localhost:5173",
+      "http://localhost:3002",
       "https://imblascoasistentefrontend.onrender.com",
     ],
     credentials: true,
@@ -162,10 +144,6 @@ app.use("/", indexRouter); // Página de administración
 app.use("/api/auth", authRouter); // Autenticación
 app.use("/api/stock", stockRouter);
 app.use("/api/chat", chatRouter);
-app.use("/api/cart", cartRouter);
-app.use("/api/order", orderRouter);
-app.use("/api/invoice", invoiceRouter); // Facturación
-app.use("/api/payment", paymentRouter); // Pagos
 app.use("/api/client", clientRouter); // Clientes
 app.use("/api/report", reportRouter); // Reportes
 
@@ -192,12 +170,19 @@ import("./services/conkavo-ai.service.js")
 // Start server
 app
   .listen(PORT, async () => {
-    // Verificar conexión a base de datos
-    console.log("\n🔍 Verificando conexión a PostgreSQL...");
+    // Conectar a MongoDB
+    console.log("\n🔍 Conectando a MongoDB...");
+    try {
+      await connect();
+    } catch (error) {
+      console.error("❌ Error al conectar a MongoDB:", error.message);
+    }
+    
+    // Verificar conexión
     const dbConnected = await testConnection();
 
     if (!dbConnected) {
-      console.warn("⚠️  ADVERTENCIA: No se pudo conectar a PostgreSQL");
+      console.warn("⚠️  ADVERTENCIA: No se pudo conectar a MongoDB");
       console.warn(
         "   El servidor iniciará, pero algunas funciones pueden fallar"
       );
@@ -217,22 +202,17 @@ app
 ║  • POST /api/stock/import   - Importar CSV             ║
 ║  • GET  /api/stock          - Ver stock                ║
 ║  • POST /api/chat/init      - Iniciar chat             ║
-║  • GET  /api/cart/:userId   - Ver carrito              ║
-║  • POST /api/order/confirm  - Confirmar pedido        ║
-║  • POST /api/invoice/create  - Crear factura            ║
 ║  • GET  /api/client         - Listar clientes          ║
-║  • POST /api/payment         - Registrar pago          ║
 ╚════════════════════════════════════════════════════════╝
   `);
 
     if (!dbConnected) {
-      console.log("\n💡 Para configurar PostgreSQL:");
+      console.log("\n💡 Para configurar MongoDB:");
       console.log("   1. Crea un archivo .env en la carpeta backend/");
-      console.log(
-        "   2. Configura las variables de entorno (ver .env.example)"
-      );
-      console.log("   3. Ejecuta: node src/database/migrate.js");
-      console.log("   4. Reinicia el servidor\n");
+      console.log("   2. Configura las variables de entorno:");
+      console.log("      - DATABASE_URL (o)");
+      console.log("      - MONGO_HOST, MONGO_PORT, MONGO_DB, MONGO_USER, MONGO_PASSWORD");
+      console.log("   3. Reinicia el servidor\n");
     }
   })
   .on("error", (err) => {

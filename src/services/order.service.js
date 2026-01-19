@@ -1,14 +1,14 @@
 /**
- * ORDER SERVICE (PostgreSQL)
- * Gestión de pedidos usando PostgreSQL
+ * ORDER SERVICE (MongoDB)
+ * Gestión de pedidos usando MongoDB
  * 
  * Características:
  * - Generación de pedidos estructurados
- * - Persistencia en PostgreSQL (tablas orders, order_items)
+ * - Persistencia en MongoDB (colección orders)
  * - Mock de envío de email (configurable)
  */
 
-import { query, getClient } from '../config/database.js'
+import { Order } from '../models/index.js'
 import * as stockService from './stock.service.js'
 import * as invoicingService from './order-invoicing.service.js'
 
@@ -38,11 +38,7 @@ function generateOrderId() {
  * @returns {Promise<Object>} Pedido creado
  */
 export async function createOrder(userId, items) {
-  const client = await getClient()
-  
   try {
-    await client.query('BEGIN')
-
     // Validar items y obtener precios
     const orderItems = []
     let totalAmount = 0
@@ -63,49 +59,41 @@ export async function createOrder(userId, items) {
       totalAmount += subtotal
 
       orderItems.push({
-        sku: item.codigo,
-        productName: item.nombre || product.name,
-        quantity: item.cantidad,
-        unitPrice,
-        subtotal
+        codigo: item.codigo,
+        nombre: item.nombre || product.name,
+        cantidad: item.cantidad,
+        precio: unitPrice,
+        subtotal: subtotal
       })
     }
 
-    // Crear pedido
-    const orderResult = await client.query(
-      `INSERT INTO orders (user_id, status, total)
-       VALUES ($1, 'confirmed', $2)
-       RETURNING id, user_id, status, total, created_at, updated_at`,
-      [userId, totalAmount]
-    )
+    // Generar order_id único
+    const orderId = generateOrderId()
 
-    const order = orderResult.rows[0]
+    // Crear pedido en MongoDB
+    const order = await Order.create({
+      order_id: orderId,
+      user_id: userId,
+      items: orderItems,
+      total_amount: totalAmount,
+      status: 'confirmed'
+    })
 
-    // Insertar items del pedido
+    // Reservar stock (disminuir) para cada item
     for (const item of orderItems) {
-      await client.query(
-        `INSERT INTO order_items (order_id, sku, product_name, quantity, unit_price, subtotal)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [order.id, item.sku, item.productName, item.quantity, item.unitPrice, item.subtotal]
-      )
-
-      // Reservar stock (disminuir)
-      await stockService.reserveStock(item.sku, item.quantity)
+      await stockService.reserveStock(item.codigo, item.cantidad)
     }
 
-    await client.query('COMMIT')
-
     // EXTENSIÓN: Enriquecer pedido con datos de facturación
-    // Esto se hace DESPUÉS del commit para no afectar la creación del pedido
     try {
       await invoicingService.enrichOrderWithInvoicingData(
-        order.id,
+        order._id.toString(),
         userId,
         orderItems.map(item => ({
-          codigo: item.sku,
-          nombre: item.productName,
-          cantidad: item.quantity,
-          precioUnitario: item.unitPrice,
+          codigo: item.codigo,
+          nombre: item.nombre,
+          cantidad: item.cantidad,
+          precioUnitario: item.precio,
           subtotal: item.subtotal
         }))
       )
@@ -115,63 +103,82 @@ export async function createOrder(userId, items) {
     }
 
     // Formatear respuesta
-    const orderId = `PED-${order.id.toString().padStart(6, '0')}`
     const formattedOrder = {
-      orderId,
-      id: order.id,
+      orderId: order.order_id,
+      id: order._id.toString(),
       userId: order.user_id,
       status: order.status,
-      total: parseFloat(order.total),
+      total: parseFloat(order.total_amount),
       totalItems: orderItems.length,
-      totalUnidades: orderItems.reduce((sum, item) => sum + item.quantity, 0),
+      totalUnidades: orderItems.reduce((sum, item) => sum + item.cantidad, 0),
       items: orderItems.map(item => ({
-        codigo: item.sku,
-        nombre: item.productName,
-        cantidad: item.quantity,
-        precioUnitario: item.unitPrice,
+        codigo: item.codigo,
+        nombre: item.nombre,
+        cantidad: item.cantidad,
+        precioUnitario: item.precio,
         subtotal: item.subtotal
       })),
-      fecha: order.created_at,
-      createdAt: order.created_at,
-      updatedAt: order.updated_at
+      fecha: order.createdAt,
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt
     }
 
     // Enviar email (mock)
     sendOrderEmail(formattedOrder)
 
-    console.log(`[ORDER] Pedido creado: ${orderId} (DB ID: ${order.id})`)
+    console.log(`[ORDER] Pedido creado: ${orderId} (DB ID: ${order._id})`)
 
     return formattedOrder
 
   } catch (error) {
-    await client.query('ROLLBACK')
     console.error('[ORDER] Error creating order:', error)
     throw error
-  } finally {
-    client.release()
   }
 }
 
 /**
  * Obtener pedido por ID
- * @param {number} orderId - ID numérico del pedido
+ * @param {string|number} orderId - ID del pedido (puede ser _id de MongoDB o order_id)
  * @returns {Promise<Object|null>}
  */
 export async function getOrder(orderId) {
-  const result = await query(
-    `SELECT o.*, 
-            COALESCE(json_agg(oi.* ORDER BY oi.id) FILTER (WHERE oi.id IS NOT NULL), '[]') as items
-     FROM orders o
-     LEFT JOIN order_items oi ON o.id = oi.order_id
-     WHERE o.id = $1
-     GROUP BY o.id`,
-    [orderId]
-  )
+  try {
+    // Intentar buscar por _id primero (ObjectId de MongoDB)
+    let order = null
+    
+    // Si es un número, buscar por order_id con formato PED-XXXXXX
+    if (typeof orderId === 'number' || /^\d+$/.test(orderId.toString())) {
+      // Buscar por _id si parece un ObjectId
+      try {
+        const mongoose = (await import('../config/database.js')).default
+        if (mongoose.Types.ObjectId.isValid(orderId)) {
+          order = await Order.findById(orderId)
+        }
+      } catch (e) {
+        // Ignorar error
+      }
+    }
+    
+    // Si no se encontró, buscar por order_id
+    if (!order) {
+      order = await Order.findOne({ order_id: orderId.toString() })
+    }
+    
+    // Si aún no se encontró y parece un número, buscar por _id numérico
+    if (!order && /^\d+$/.test(orderId.toString())) {
+      const mongoose = (await import('../config/database.js')).default
+      if (mongoose.Types.ObjectId.isValid(orderId)) {
+        order = await Order.findById(orderId)
+      }
+    }
 
-  if (result.rows.length === 0) return null
+    if (!order) return null
 
-  const row = result.rows[0]
-  return formatOrderResponse(row)
+    return formatOrderResponse(order)
+  } catch (error) {
+    console.error('[ORDER] Error getting order:', error)
+    return null
+  }
 }
 
 /**
@@ -180,18 +187,16 @@ export async function getOrder(orderId) {
  * @returns {Promise<Array>}
  */
 export async function getOrdersByUser(userId) {
-  const result = await query(
-    `SELECT o.*, 
-            COALESCE(json_agg(oi.* ORDER BY oi.id) FILTER (WHERE oi.id IS NOT NULL), '[]') as items
-     FROM orders o
-     LEFT JOIN order_items oi ON o.id = oi.order_id
-     WHERE o.user_id = $1
-     GROUP BY o.id
-     ORDER BY o.created_at DESC`,
-    [userId]
-  )
-
-  return result.rows.map(formatOrderResponse)
+  try {
+    const orders = await Order.find({ user_id: userId })
+      .sort({ createdAt: -1 })
+      .lean()
+    
+    return orders.map(formatOrderResponse)
+  } catch (error) {
+    console.error('[ORDER] Error getting orders by user:', error)
+    return []
+  }
 }
 
 /**
@@ -199,94 +204,101 @@ export async function getOrdersByUser(userId) {
  * @returns {Promise<Array>}
  */
 export async function getAllOrders() {
-  const result = await query(
-    `SELECT o.*, 
-            COALESCE(json_agg(oi.* ORDER BY oi.id) FILTER (WHERE oi.id IS NOT NULL), '[]') as items
-     FROM orders o
-     LEFT JOIN order_items oi ON o.id = oi.order_id
-     GROUP BY o.id
-     ORDER BY o.created_at DESC`
-  )
-
-  return result.rows.map(formatOrderResponse)
+  try {
+    const orders = await Order.find()
+      .sort({ createdAt: -1 })
+      .lean()
+    
+    return orders.map(formatOrderResponse)
+  } catch (error) {
+    console.error('[ORDER] Error getting all orders:', error)
+    return []
+  }
 }
 
 /**
  * Actualizar estado del pedido
- * @param {number} orderId 
+ * @param {string|number} orderId 
  * @param {string} status - 'draft' | 'confirmed' | 'rejected' | 'cancelled' | 'sent_to_erp' | 'invoiced' | 'error'
  * @returns {Promise<Object|null>}
  */
 export async function updateOrderStatus(orderId, status) {
-  // EXTENSIÓN: Validar transición de estado usando el servicio de facturación
-  const currentOrder = await getOrder(orderId)
-  if (currentOrder && !invoicingService.validateStatusTransition(currentOrder.status, status)) {
-    throw new Error(`Transición de estado inválida: ${currentOrder.status} → ${status}`)
+  try {
+    // EXTENSIÓN: Validar transición de estado usando el servicio de facturación
+    const currentOrder = await getOrder(orderId)
+    if (currentOrder && !invoicingService.validateStatusTransition(currentOrder.status, status)) {
+      throw new Error(`Transición de estado inválida: ${currentOrder.status} → ${status}`)
+    }
+
+    // Buscar pedido
+    let order = null
+    
+    // Intentar por _id
+    const mongoose = (await import('../config/database.js')).default
+    if (mongoose.Types.ObjectId.isValid(orderId)) {
+      order = await Order.findByIdAndUpdate(
+        orderId,
+        { status, updatedAt: new Date() },
+        { new: true }
+      )
+    }
+    
+    // Si no se encontró, buscar por order_id
+    if (!order) {
+      order = await Order.findOneAndUpdate(
+        { order_id: orderId.toString() },
+        { status, updatedAt: new Date() },
+        { new: true }
+      )
+    }
+
+    if (!order) return null
+
+    return formatOrderResponse(order)
+  } catch (error) {
+    console.error('[ORDER] Error updating order status:', error)
+    throw error
   }
-
-  const result = await query(
-    `UPDATE orders 
-     SET status = $1, updated_at = CURRENT_TIMESTAMP
-     WHERE id = $2
-     RETURNING *`,
-    [status, orderId]
-  )
-
-  if (result.rows.length === 0) return null
-
-  return formatOrderResponse(result.rows[0])
 }
 
 /**
  * Formatear respuesta de pedido
- * @param {Object} row - Fila de BD
+ * @param {Object} order - Documento de MongoDB
  * @returns {Object} Pedido formateado
  */
-function formatOrderResponse(row) {
-  const orderId = `PED-${row.id.toString().padStart(6, '0')}`
-  const items = Array.isArray(row.items) ? row.items : (row.items ? [row.items] : [])
+function formatOrderResponse(order) {
+  const orderId = order.order_id || `PED-${order._id.toString().slice(-6)}`
+  const items = order.items || []
 
-  // EXTENSIÓN: Incluir datos de facturación si existen
   const response = {
     orderId,
-    id: row.id,
-    userId: row.user_id,
-    status: row.status,
-    total: parseFloat(row.total || 0),
+    id: order._id.toString(),
+    userId: order.user_id,
+    status: order.status,
+    total: parseFloat(order.total_amount || 0),
     totalItems: items.length,
-    totalUnidades: items.reduce((sum, item) => sum + (item.quantity || 0), 0),
+    totalUnidades: items.reduce((sum, item) => sum + (item.cantidad || 0), 0),
     items: items.map(item => ({
-      codigo: item.sku,
-      nombre: item.product_name,
-      cantidad: item.quantity,
-      precioUnitario: parseFloat(item.unit_price || 0),
+      codigo: item.codigo,
+      nombre: item.nombre,
+      cantidad: item.cantidad,
+      precioUnitario: parseFloat(item.precio || 0),
       subtotal: parseFloat(item.subtotal || 0)
     })),
-    fecha: row.created_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
+    fecha: order.createdAt,
+    createdAt: order.createdAt,
+    updatedAt: order.updatedAt
   }
 
-  // Agregar campos de facturación si existen
-  if (row.net_amount !== null && row.net_amount !== undefined) {
-    response.netAmount = parseFloat(row.net_amount)
+  // Agregar campos adicionales si existen
+  if (order.erp_reference) {
+    response.erpReference = order.erp_reference
   }
-  if (row.iva_amount !== null && row.iva_amount !== undefined) {
-    response.ivaAmount = parseFloat(row.iva_amount)
+  if (order.invoice_number) {
+    response.invoiceNumber = order.invoice_number
   }
-  if (row.total_amount !== null && row.total_amount !== undefined) {
-    response.totalAmount = parseFloat(row.total_amount)
-  }
-  if (row.client_snapshot) {
-    response.clientSnapshot = typeof row.client_snapshot === 'string' 
-      ? JSON.parse(row.client_snapshot) 
-      : row.client_snapshot
-  }
-  if (row.erp_reference) {
-    response.erpReference = row.erp_reference
-  }
-  if (row.invoiced_at) {
-    response.invoicedAt = row.invoiced_at
+  if (order.notes) {
+    response.notes = order.notes
   }
 
   return response

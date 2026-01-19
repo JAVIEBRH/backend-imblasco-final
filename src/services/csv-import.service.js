@@ -11,7 +11,7 @@
  */
 
 import { parse } from 'csv-parse/sync'
-import { query, getClient } from '../config/database.js'
+import { Product } from '../models/index.js'
 
 /**
  * Mapeo de columnas WooCommerce
@@ -168,7 +168,7 @@ export function parseWooCommerceCSV(csvContent, encoding = 'utf8') {
 }
 
 /**
- * Importar productos a PostgreSQL
+ * Importar productos a MongoDB
  * @param {Array<Object>} products - Array de productos parseados
  * @returns {Promise<Object>} - Resultado de la importación
  */
@@ -177,46 +177,52 @@ export async function importProductsToDatabase(products) {
     throw new Error('No hay productos para importar')
   }
 
-  const client = await getClient()
   try {
-    await client.query('BEGIN')
-
     let inserted = 0
     let updated = 0
     const errors = []
 
+    // Usar bulkWrite para mejor rendimiento
+    const bulkOps = []
+
     for (const product of products) {
       try {
-        // Verificar si existe
-        const existing = await client.query(
-          'SELECT id, stock, price FROM products WHERE sku = $1',
-          [product.sku]
-        )
-
-        if (existing.rows.length > 0) {
-          // Actualizar producto existente
-          await client.query(
-            `UPDATE products 
-             SET name = $1, stock = $2, price = $3, updated_at = CURRENT_TIMESTAMP
-             WHERE sku = $4`,
-            [product.name, product.stock, product.price, product.sku]
-          )
-          updated++
-        } else {
-          // Insertar nuevo producto
-          await client.query(
-            `INSERT INTO products (sku, name, stock, price)
-             VALUES ($1, $2, $3, $4)`,
-            [product.sku, product.name, product.stock, product.price]
-          )
-          inserted++
+        const normalizedSKU = product.sku?.trim().toUpperCase()
+        
+        if (!normalizedSKU) {
+          errors.push(`SKU vacío para producto: ${product.name || 'sin nombre'}`)
+          continue
         }
+
+        // Upsert: actualizar si existe, insertar si no existe
+        bulkOps.push({
+          updateOne: {
+            filter: { sku: normalizedSKU },
+            update: {
+              $set: {
+                name: product.name || normalizedSKU,
+                stock: parseInt(product.stock, 10) || 0,
+                price: parseFloat(product.price) || 0,
+                updatedAt: new Date()
+              },
+              $setOnInsert: {
+                createdAt: new Date()
+              }
+            },
+            upsert: true
+          }
+        })
       } catch (error) {
         errors.push(`SKU ${product.sku}: ${error.message}`)
       }
     }
 
-    await client.query('COMMIT')
+    // Ejecutar operaciones en lote
+    if (bulkOps.length > 0) {
+      const result = await Product.bulkWrite(bulkOps, { ordered: false })
+      inserted = result.upsertedCount
+      updated = result.modifiedCount
+    }
 
     return {
       success: true,
@@ -226,10 +232,7 @@ export async function importProductsToDatabase(products) {
       errors: errors.length > 0 ? errors : null
     }
   } catch (error) {
-    await client.query('ROLLBACK')
     throw error
-  } finally {
-    client.release()
   }
 }
 

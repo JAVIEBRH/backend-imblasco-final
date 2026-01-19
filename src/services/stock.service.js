@@ -1,11 +1,9 @@
 /**
- * STOCK SERVICE (PostgreSQL)
- * Gestión de inventario usando PostgreSQL
- * 
- * Reemplaza el servicio anterior que usaba Map en memoria
+ * STOCK SERVICE (MongoDB)
+ * Gestión de inventario usando MongoDB
  */
 
-import { query } from '../config/database.js'
+import { Product } from '../models/index.js'
 
 /**
  * Obtener producto por SKU
@@ -14,26 +12,8 @@ import { query } from '../config/database.js'
  */
 export async function getProductBySKU(sku) {
   const normalizedSKU = sku?.trim().toUpperCase()
-  const result = await query(
-    'SELECT id, sku, name, stock, price, updated_at FROM products WHERE sku = $1',
-    [normalizedSKU]
-  )
-  
-  if (result.rows.length === 0) return null
-  
-  const row = result.rows[0]
-  return {
-    id: row.id,
-    codigo: row.sku,
-    sku: row.sku,
-    nombre: row.name,
-    name: row.name,
-    stock: parseInt(row.stock, 10),
-    precio: parseFloat(row.price),
-    price: parseFloat(row.price),
-    disponible: row.stock > 0,
-    updated_at: row.updated_at
-  }
+  const product = await Product.findOne({ sku: normalizedSKU })
+  return product ? product.toJSON() : null
 }
 
 /**
@@ -44,41 +24,30 @@ export async function getProductBySKU(sku) {
 export async function getAllStock(options = {}) {
   const { limit = 1000, offset = 0, availableOnly = false } = options
   
-  let sql = 'SELECT id, sku, name, stock, price, updated_at FROM products'
-  const params = []
+  const query = availableOnly ? { stock: { $gt: 0 } } : {}
   
-  if (availableOnly) {
-    sql += ' WHERE stock > 0'
-  }
-  
-  sql += ' ORDER BY sku ASC LIMIT $1 OFFSET $2'
-  params.push(limit, offset)
-  
-  const result = await query(sql, params)
-  
-  const products = result.rows.map(row => ({
-    id: row.id,
-    codigo: row.sku,
-    sku: row.sku,
-    nombre: row.name,
-    name: row.name,
-    stock: parseInt(row.stock, 10),
-    precio: parseFloat(row.price),
-    price: parseFloat(row.price),
-    disponible: row.stock > 0,
-    updated_at: row.updated_at
-  }))
-  
-  // Contar total
-  const countResult = await query(
-    availableOnly 
-      ? 'SELECT COUNT(*) as total FROM products WHERE stock > 0'
-      : 'SELECT COUNT(*) as total FROM products'
-  )
-  const total = parseInt(countResult.rows[0].total, 10)
+  const [products, total] = await Promise.all([
+    Product.find(query)
+      .sort({ sku: 1 })
+      .limit(limit)
+      .skip(offset)
+      .lean(),
+    Product.countDocuments(query)
+  ])
   
   return {
-    products,
+    products: products.map(p => ({
+      id: p._id.toString(),
+      codigo: p.sku,
+      sku: p.sku,
+      nombre: p.name,
+      name: p.name,
+      stock: parseInt(p.stock, 10),
+      precio: parseFloat(p.price) || 0,
+      price: parseFloat(p.price) || 0,
+      disponible: p.stock > 0,
+      updated_at: p.updatedAt
+    })),
     count: products.length,
     total,
     limit,
@@ -96,28 +65,42 @@ export async function searchProducts(term, limit = 10) {
   const normalizedTerm = term?.toLowerCase().trim()
   if (!normalizedTerm) return []
   
-  const searchTerm = `%${normalizedTerm}%`
-  const result = await query(
-    `SELECT id, sku, name, stock, price 
-     FROM products 
-     WHERE LOWER(sku) LIKE $1 OR LOWER(name) LIKE $1
-     ORDER BY 
-       CASE WHEN LOWER(sku) = $2 THEN 1 ELSE 2 END,
-       name ASC
-     LIMIT $3`,
-    [searchTerm, normalizedTerm, limit]
-  )
+  // Búsqueda por SKU exacto primero, luego por nombre
+  const exactMatch = await Product.findOne({ sku: normalizedTerm.toUpperCase() }).lean()
   
-  return result.rows.map(row => ({
-    id: row.id,
-    codigo: row.sku,
-    sku: row.sku,
-    nombre: row.name,
-    name: row.name,
-    stock: parseInt(row.stock, 10),
-    precio: parseFloat(row.price),
-    price: parseFloat(row.price),
-    disponible: row.stock > 0
+  const regex = new RegExp(normalizedTerm, 'i')
+  const products = await Product.find({
+    $or: [
+      { sku: { $regex: regex } },
+      { name: { $regex: regex } }
+    ]
+  })
+    .sort({ 
+      sku: exactMatch ? -1 : 1, // Priorizar SKU exacto
+      name: 1 
+    })
+    .limit(limit)
+    .lean()
+  
+  // Si hay match exacto, ponerlo primero
+  if (exactMatch) {
+    const exactIndex = products.findIndex(p => p._id.toString() === exactMatch._id.toString())
+    if (exactIndex > 0) {
+      products.splice(exactIndex, 1)
+      products.unshift(exactMatch)
+    }
+  }
+  
+  return products.map(p => ({
+    id: p._id.toString(),
+    codigo: p.sku,
+    sku: p.sku,
+    nombre: p.name,
+    name: p.name,
+    stock: parseInt(p.stock, 10),
+    precio: parseFloat(p.price) || 0,
+    price: parseFloat(p.price) || 0,
+    disponible: p.stock > 0
   }))
 }
 
@@ -214,8 +197,8 @@ export async function getAvailableProducts(limit = 1000) {
  * @returns {Promise<boolean>}
  */
 export async function isStockLoaded() {
-  const result = await query('SELECT COUNT(*) as total FROM products')
-  return parseInt(result.rows[0].total, 10) > 0
+  const count = await Product.countDocuments()
+  return count > 0
 }
 
 /**
@@ -227,15 +210,18 @@ export async function isStockLoaded() {
 export async function reserveStock(sku, cantidad) {
   const normalizedSKU = sku?.trim().toUpperCase()
   
-  const result = await query(
-    `UPDATE products 
-     SET stock = stock - $1, updated_at = CURRENT_TIMESTAMP
-     WHERE sku = $2 AND stock >= $1
-     RETURNING id`,
-    [cantidad, normalizedSKU]
+  const result = await Product.updateOne(
+    { 
+      sku: normalizedSKU,
+      stock: { $gte: cantidad } // Solo actualizar si hay stock suficiente
+    },
+    {
+      $inc: { stock: -cantidad },
+      $set: { updatedAt: new Date() }
+    }
   )
   
-  return result.rows.length > 0
+  return result.modifiedCount > 0
 }
 
 // Aliases para compatibilidad con código existente

@@ -6,20 +6,30 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch server.js",
+    "dev": "node src/scripts/free-port.js 3001 && node --watch server.js",
     "migrate": "node src/database/migrate.js",
     "migrate:invoicing": "node src/database/migrate-invoicing.js",
     "migrate:users": "node src/database/migrate-users.js",
-    "seed": "node src/database/seed.js"
+    "seed": "node src/database/seed.js",
+    "import-products": "node src/scripts/import-products.js",
+    "drop-woo-index": "node src/scripts/drop-productos-woo-id-index.js",
+    "audit-woocommerce": "node src/scripts/woocommerce-audit.js",
+    "scrape": "node src/scripts/scraper.js",
+    "serve-scraped": "node src/scripts/serve-scraped.js"
   },
   "dependencies": {
+    "axios": "^1.13.2",
+    "cheerio": "^1.1.2",
     "cors": "^2.8.5",
     "csv-parse": "^5.5.2",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
+    "fs-extra": "^11.3.3",
+    "mongoose": "^9.1.4",
     "multer": "^1.4.5-lts.1",
     "openai": "^6.15.0",
     "pg": "^8.11.3",
+    "puppeteer": "^24.35.0",
     "uuid": "^9.0.0"
   }
 }

@@ -286,6 +286,39 @@ function extractProductTerm(message) {
   return result
 }
 
+/**
+ * Detectar consultas sensibles/privadas para bloquearlas temprano
+ * @param {string} message - Mensaje del usuario
+ * @returns {boolean}
+ */
+function isSensitiveInfoQuery(message) {
+  const normalized = normalizeSearchText(message || '').toLowerCase()
+  if (!normalized) return false
+
+  const patterns = [
+    /\b(ignora|omite|omitir|saltate|saltar|disregard|ignore|bypass)\b(?:\s+\w+){0,4}\s+(instrucciones|reglas|filtros|instructions|rules|filters)\b/i,
+    /\b(system\s*prompt|prompt\s+del\s+sistema|prompt\s+interno|reglas\s+internas|politicas\s+internas)\b/i,
+    /\b(muestra|revela|comparte)\b(?:\s+\w+){0,4}\s+(system\s*prompt|prompt\s+del\s+sistema|reglas\s+internas|politicas\s+internas)\b/i,
+    /\b(desactiva|deshabilita|disable|turn\s+off)\b(?:\s+\w+){0,3}\s+(filtros?|seguridad|filters?|safety)\b/i,
+    /\b(resume|resumeme|resumir|summarize)\b(?:\s+\w+){0,4}\s+(conversacion|chat|historial|conversation|history)\b/i,
+    /\b(que\s+informacion\s+sensible|informacion\s+privada|datos\s+confidenciales|info\s+interna|informacion\s+interna)\b/i,
+    /\b(donde\s+almacenan|donde\s+guardan\s+el\s+stock|ubicacion\s+del\s+inventario|quien\s+administra\s+el\s+inventario)\b/i,
+    /\b(ganan|ganancias|utilidad|margen|rentabilidad|factur(an|a)|ingresos?)\b/i,
+    /\b(costo\s+real|precio\s+interno|precios?\s+internos)\b/i,
+    /\b(proveedor(es)?|proveed\w*|contactos?\s+de\s+proveedores?|contratos?)\b/i,
+    /\b(banco|cuenta(s)?|clave|password|contrase(n|ñ)a|base\s+de\s+datos|bd|clave\s+acces+o)\b/i,
+    /\b(rut|correo\s+personal|mail\s+personal|telefono\s+personal|celular|direccion\s+personal|domicilio|donde\s+vive)\b/i,
+    /\b(dueno|dueño|duenio|socios?|gerente|contador|empleados?|salario|sueldos?)\b/i,
+    /\b(listado\s+de\s+clientes|mejores\s+clientes|contacto\s+personal)\b/i
+  ]
+
+  return patterns.some(pattern => pattern.test(normalized))
+}
+
+function getSensitiveRefusalMessage() {
+  return 'Lo siento, pero no puedo compartir información interna o datos personales. Puedo ayudarte con stock, precios, características u horarios de atención.'
+}
+
 // Sesiones de usuarios (en memoria, solo para estado conversacional)
 const sessions = new Map()
 
@@ -944,6 +977,13 @@ export async function processMessageWithAI(userId, message) {
     
     // Agregar mensaje del usuario al historial
     addToHistory(session, 'user', message)
+
+    // Bloqueo temprano de consultas sensibles/privadas
+    if (isSensitiveInfoQuery(message)) {
+      const refusalMessage = getSensitiveRefusalMessage()
+      addToHistory(session, 'bot', refusalMessage)
+      return createResponse(refusalMessage, session.state, null, cart)
+    }
     
     // El agente está autenticado con Consumer Key/Secret de WooCommerce
     // Puede consultar stock sin necesidad de que el usuario final esté logueado
@@ -1095,7 +1135,17 @@ export async function processMessageWithAI(userId, message) {
       )
     }
     
-    // Si es AMBIGUA, OpenAI ya determinó que no hay suficiente información
+    // Si es AMBIGUA, intentar extraer término genérico antes de pedir más info
+    if (queryType === 'AMBIGUA') {
+      const extractedTerm = extractProductTerm(message)
+      if (extractedTerm) {
+        console.log(`[WooCommerce] 🔍 Consulta AMBIGUA con término genérico → buscando productos por "${extractedTerm}"`)
+        context.terminoProductoParaBuscar = extractedTerm
+        queryType = 'PRODUCTOS'
+      }
+    }
+
+    // Si sigue siendo AMBIGUA, OpenAI determinó que no hay suficiente información
     // Si OpenAI detectó que se refiere al contexto, ya lo habría clasificado como PRODUCTO
     // Por lo tanto, si llegamos aquí con AMBIGUA, realmente necesitamos más información
     if (queryType === 'AMBIGUA') {
@@ -1218,6 +1268,16 @@ export async function processMessageWithAI(userId, message) {
       if (productStockData) {
         console.log(`[WooCommerce] ✅ Producto ya encontrado desde contexto, omitiendo búsquedas adicionales`)
       } else {
+      
+      // Si no hay SKU/ID ni término claro, pedir contexto en vez de buscar
+      if (!providedExplicitSku && !providedExplicitId && !terminoProductoParaBuscar) {
+        return createResponse(
+          'Necesito el nombre completo o el SKU del producto para darte precio y stock. ¿Me lo confirmas?',
+          session.state,
+          null,
+          cart
+        )
+      }
       
       // Buscar por SKU primero
       if (providedExplicitSku) {
@@ -1847,7 +1907,8 @@ export async function processMessageWithAI(userId, message) {
               }
               console.log(`[WooCommerce] ❌ Variante no encontrada en variaciones: ${atributoNormalizado}="${valorNormalizado}"`)
             }
-          } else {
+          }
+        } else {
             // CASO 2: NO tiene valorAtributo → Listar todas las variantes disponibles del atributo
             // Ejemplo: "qué color tiene T60?" o "en que colores?" → listar todos los colores disponibles
             const atributoNormalizado = (analisisOpenAI.atributo || '').toLowerCase().trim()

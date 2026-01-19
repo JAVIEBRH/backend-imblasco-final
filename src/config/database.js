@@ -1,80 +1,94 @@
 /**
  * DATABASE CONFIGURATION
- * Conexión a PostgreSQL usando pg (node-postgres)
- *
- * NOTA: dotenv.config() se carga en index.js, no es necesario aquí
+ * Conexión a MongoDB usando Mongoose
  */
 
-import pg from "pg";
+import mongoose from 'mongoose';
 
-const { Pool } = pg;
-
-// Función helper para obtener configuración de DB (carga lazy)
-function getDbConfig() {
-  return {
-    host: process.env.DB_HOST || "localhost",
-    port: parseInt(process.env.DB_PORT || "5432", 10),
-    database: process.env.DB_NAME || "imblasco_b2b",
-    user: process.env.DB_USER || "postgres",
-    password: process.env.DB_PASSWORD || "postgres",
-    max: 20,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 2000,
-  };
-}
-
-// Crear pool de forma lazy (cuando se necesite, no al importar)
-let pool = null;
-
-function getPool() {
-  if (!pool) {
-    const config = getDbConfig();
-    pool = new Pool(config);
-    
-    // Log de depuración (solo una vez)
-    console.log('[Database] Pool creado con configuración:');
-    console.log(`  Host: ${config.host}`);
-    console.log(`  Port: ${config.port}`);
-    console.log(`  Database: ${config.database}`);
-    console.log(`  User: ${config.user}`);
-    console.log(`  Password: ${config.password ? `✅ Configurada (${config.password.length} caracteres)` : '❌ NO CONFIGURADA'}`);
-    
-    // Manejo de errores del pool
-    pool.on("error", (err, client) => {
-      console.error("Unexpected error on idle client", err);
-      process.exit(-1);
-    });
+// Configuración de conexión
+function getMongoUri() {
+  // Intentar obtener desde DATABASE_URL (Render/Heroku style)
+  if (process.env.DATABASE_URL) {
+    return process.env.DATABASE_URL;
   }
-  return pool;
+
+  // O construir desde variables individuales
+  const host = process.env.DB_HOST || process.env.MONGO_HOST || 'localhost';
+  const port = process.env.DB_PORT || process.env.MONGO_PORT || '27017';
+  const database = process.env.DB_NAME || process.env.MONGO_DB || 'imblasco_b2b';
+  const user = process.env.DB_USER || process.env.MONGO_USER || '';
+  const password = process.env.DB_PASSWORD || process.env.MONGO_PASSWORD || '';
+
+  // Si hay usuario/password, usar autenticación
+  if (user && password) {
+    return `mongodb://${user}:${password}@${host}:${port}/${database}?authSource=admin`;
+  }
+
+  // Conexión local sin autenticación
+  return `mongodb://${host}:${port}/${database}`;
 }
+
+let isConnected = false;
 
 /**
- * Ejecutar query
- * @param {string} text - SQL query
- * @param {Array} params - Parámetros
- * @returns {Promise}
+ * Conectar a MongoDB
+ * @returns {Promise<mongoose.Connection>}
  */
-export async function query(text, params) {
-  const start = Date.now();
+export async function connect() {
+  if (isConnected) {
+    console.log('[MongoDB] Ya está conectado');
+    return mongoose.connection;
+  }
+
   try {
-    const res = await getPool().query(text, params);
-    const duration = Date.now() - start;
-    if (process.env.NODE_ENV === "development") {
-      console.log("Executed query", { text, duration, rows: res.rowCount });
-    }
-    return res;
+    const mongoUri = getMongoUri();
+    
+    const options = {
+      maxPoolSize: 10, // Mantener hasta 10 conexiones
+      serverSelectionTimeoutMS: 5000, // Timeout de 5 segundos
+      socketTimeoutMS: 45000, // Cerrar sockets después de 45s de inactividad
+    };
+
+    // Conectar
+    await mongoose.connect(mongoUri, options);
+
+    isConnected = true;
+    console.log('[MongoDB] ✅ Conectado exitosamente');
+    console.log(`  Database: ${mongoose.connection.db.databaseName}`);
+
+    // Manejo de eventos
+    mongoose.connection.on('error', (err) => {
+      console.error('[MongoDB] ❌ Error de conexión:', err.message);
+      isConnected = false;
+    });
+
+    mongoose.connection.on('disconnected', () => {
+      console.warn('[MongoDB] ⚠️ Desconectado');
+      isConnected = false;
+    });
+
+    mongoose.connection.on('reconnected', () => {
+      console.log('[MongoDB] ✅ Reconectado');
+      isConnected = true;
+    });
+
+    return mongoose.connection;
   } catch (error) {
-    console.error("Database query error:", error);
+    console.error('[MongoDB] ❌ Error al conectar:', error.message);
+    isConnected = false;
     throw error;
   }
 }
 
 /**
- * Obtener cliente del pool para transacciones
- * @returns {Promise<pg.PoolClient>}
+ * Desconectar de MongoDB
  */
-export async function getClient() {
-  return await getPool().connect();
+export async function disconnect() {
+  if (isConnected) {
+    await mongoose.disconnect();
+    isConnected = false;
+    console.log('[MongoDB] Desconectado');
+  }
 }
 
 /**
@@ -83,24 +97,30 @@ export async function getClient() {
  */
 export async function testConnection() {
   try {
-    const res = await query("SELECT NOW()");
-    console.log("✅ Database connected:", res.rows[0].now);
+    if (!isConnected) {
+      await connect();
+    }
+    
+    // Ping a la base de datos
+    await mongoose.connection.db.admin().ping();
+    console.log('✅ MongoDB connected');
     return true;
   } catch (error) {
-    console.error("❌ Database connection failed:", error.message);
+    console.error('❌ MongoDB connection failed:', error.message);
     return false;
   }
 }
 
 /**
- * Cerrar pool (útil para tests o shutdown)
+ * Obtener el estado de la conexión
  */
-export async function closePool() {
-  if (pool) {
-    await pool.end();
-    pool = null;
-  }
+export function getConnectionState() {
+  return {
+    isConnected,
+    readyState: mongoose.connection.readyState, // 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
+    dbName: mongoose.connection.db?.databaseName
+  };
 }
 
-// Exportar función getPool para compatibilidad
-export default getPool;
+// Exportar mongoose para uso en modelos
+export default mongoose;

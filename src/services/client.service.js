@@ -1,220 +1,183 @@
 /**
- * CLIENT SERVICE (COMPLETO)
+ * CLIENT SERVICE (MongoDB)
  * Servicio completo de gestión de clientes
  */
 
-import { query, getClient } from '../config/database.js'
+import { User } from '../models/index.js'
+import { Order } from '../models/index.js'
 
 /**
  * Obtener todos los clientes
  */
 export async function getAllClients(filters = {}) {
-  let sql = 'SELECT * FROM users WHERE activo = true'
-  const params = []
-  let paramCount = 1
-
-  if (filters.search) {
-    sql += ` AND (razon_social ILIKE $${paramCount} OR email ILIKE $${paramCount} OR rut ILIKE $${paramCount})`
-    params.push(`%${filters.search}%`)
-    paramCount++
+  try {
+    const query = { activo: true }
+    
+    if (filters.search) {
+      const searchRegex = new RegExp(filters.search, 'i')
+      query.$or = [
+        { razon_social: searchRegex },
+        { email: searchRegex },
+        { rut: searchRegex }
+      ]
+    }
+    
+    const clients = await User.find(query)
+      .sort({ razon_social: 1 })
+      .lean()
+    
+    return clients.map(formatClient)
+  } catch (error) {
+    console.error('[CLIENT] Error getting all clients:', error)
+    return []
   }
-
-  sql += ' ORDER BY razon_social ASC'
-
-  const result = await query(sql, params)
-  return result.rows.map(formatClient)
 }
 
 /**
  * Obtener cliente por ID
  */
 export async function getClientById(userId) {
-  const result = await query(
-    'SELECT * FROM users WHERE user_id = $1 AND activo = true',
-    [userId]
-  )
-
-  if (result.rows.length === 0) return null
-  return formatClient(result.rows[0])
+  try {
+    const client = await User.findOne({ user_id: userId, activo: true }).lean()
+    if (!client) return null
+    return formatClient(client)
+  } catch (error) {
+    console.error('[CLIENT] Error getting client by ID:', error)
+    return null
+  }
 }
 
 /**
  * Crear cliente
  */
 export async function createClient(clientData) {
-  const result = await query(
-    `INSERT INTO users (
-      user_id, email, password_hash, nombre, razon_social, rut, giro,
-      direccion, comuna, email_facturacion
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    RETURNING *`,
-    [
-      clientData.userId || `client-${Date.now()}`,
-      clientData.email,
-      clientData.passwordHash || '$2b$10$rOzJ8K8K8K8K8K8K8K8K8e', // Mock hash
-      clientData.nombre,
-      clientData.razonSocial,
-      clientData.rut,
-      clientData.giro || 'Comercio',
-      clientData.direccion,
-      clientData.comuna,
-      clientData.emailFacturacion || clientData.email
-    ]
-  )
-
-  return formatClient(result.rows[0])
+  try {
+    const client = await User.create({
+      user_id: clientData.userId || `client-${Date.now()}`,
+      email: clientData.email,
+      password_hash: clientData.passwordHash || '$2b$10$rOzJ8K8K8K8K8K8K8K8K8e', // Mock hash
+      nombre: clientData.nombre,
+      razon_social: clientData.razonSocial,
+      rut: clientData.rut,
+      giro: clientData.giro || 'Comercio',
+      direccion: clientData.direccion,
+      comuna: clientData.comuna,
+      email_facturacion: clientData.emailFacturacion || clientData.email,
+      activo: true
+    })
+    
+    return formatClient(client.toObject())
+  } catch (error) {
+    console.error('[CLIENT] Error creating client:', error)
+    throw error
+  }
 }
 
 /**
  * Actualizar cliente
  */
 export async function updateClient(userId, clientData) {
-  const updates = []
-  const params = []
-  let paramCount = 1
-
-  if (clientData.email) {
-    updates.push(`email = $${paramCount}`)
-    params.push(clientData.email)
-    paramCount++
+  try {
+    const updates = {}
+    
+    if (clientData.email) updates.email = clientData.email
+    if (clientData.nombre) updates.nombre = clientData.nombre
+    if (clientData.razonSocial) updates.razon_social = clientData.razonSocial
+    if (clientData.rut) updates.rut = clientData.rut
+    if (clientData.giro) updates.giro = clientData.giro
+    if (clientData.direccion) updates.direccion = clientData.direccion
+    if (clientData.comuna) updates.comuna = clientData.comuna
+    if (clientData.emailFacturacion) updates.email_facturacion = clientData.emailFacturacion
+    
+    if (Object.keys(updates).length === 0) {
+      return await getClientById(userId)
+    }
+    
+    updates.updatedAt = new Date()
+    
+    const client = await User.findOneAndUpdate(
+      { user_id: userId },
+      { $set: updates },
+      { new: true }
+    ).lean()
+    
+    if (!client) return null
+    return formatClient(client)
+  } catch (error) {
+    console.error('[CLIENT] Error updating client:', error)
+    throw error
   }
-
-  if (clientData.nombre) {
-    updates.push(`nombre = $${paramCount}`)
-    params.push(clientData.nombre)
-    paramCount++
-  }
-
-  if (clientData.razonSocial) {
-    updates.push(`razon_social = $${paramCount}`)
-    params.push(clientData.razonSocial)
-    paramCount++
-  }
-
-  if (clientData.rut) {
-    updates.push(`rut = $${paramCount}`)
-    params.push(clientData.rut)
-    paramCount++
-  }
-
-  if (clientData.giro) {
-    updates.push(`giro = $${paramCount}`)
-    params.push(clientData.giro)
-    paramCount++
-  }
-
-  if (clientData.direccion) {
-    updates.push(`direccion = $${paramCount}`)
-    params.push(clientData.direccion)
-    paramCount++
-  }
-
-  if (clientData.comuna) {
-    updates.push(`comuna = $${paramCount}`)
-    params.push(clientData.comuna)
-    paramCount++
-  }
-
-  if (clientData.emailFacturacion) {
-    updates.push(`email_facturacion = $${paramCount}`)
-    params.push(clientData.emailFacturacion)
-    paramCount++
-  }
-
-  if (updates.length === 0) {
-    return await getClientById(userId)
-  }
-
-  params.push(userId)
-  const sql = `UPDATE users SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE user_id = $${paramCount} RETURNING *`
-
-  const result = await query(sql, params)
-  return formatClient(result.rows[0])
 }
 
 /**
  * Desactivar cliente
  */
 export async function deactivateClient(userId) {
-  const result = await query(
-    'UPDATE users SET activo = false, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 RETURNING *',
-    [userId]
-  )
-
-  if (result.rows.length === 0) return null
-  return formatClient(result.rows[0])
+  try {
+    const client = await User.findOneAndUpdate(
+      { user_id: userId },
+      { $set: { activo: false, updatedAt: new Date() } },
+      { new: true }
+    ).lean()
+    
+    if (!client) return null
+    return formatClient(client)
+  } catch (error) {
+    console.error('[CLIENT] Error deactivating client:', error)
+    return null
+  }
 }
 
 /**
  * Obtener historial de compras del cliente
  */
 export async function getClientPurchaseHistory(userId) {
-  const result = await query(
-    `SELECT o.*, 
-            COALESCE(json_agg(oi.* ORDER BY oi.id) FILTER (WHERE oi.id IS NOT NULL), '[]') as items
-     FROM orders o
-     LEFT JOIN order_items oi ON o.id = oi.order_id
-     WHERE o.user_id = $1
-     GROUP BY o.id
-     ORDER BY o.created_at DESC`,
-    [userId]
-  )
-
-  return result.rows.map(row => ({
-    id: row.id,
-    orderId: `PED-${row.id.toString().padStart(6, '0')}`,
-    status: row.status,
-    total: parseFloat(row.total),
-    createdAt: row.created_at,
-    items: Array.isArray(row.items) ? row.items : (row.items ? [row.items] : [])
-  }))
+  try {
+    const orders = await Order.find({ user_id: userId })
+      .sort({ createdAt: -1 })
+      .lean()
+    
+    return orders.map(order => ({
+      id: order._id.toString(),
+      orderId: order.order_id,
+      status: order.status,
+      total: parseFloat(order.total_amount || 0),
+      createdAt: order.createdAt,
+      items: order.items || []
+    }))
+  } catch (error) {
+    console.error('[CLIENT] Error getting purchase history:', error)
+    return []
+  }
 }
 
 /**
  * Obtener cuentas por cobrar del cliente
+ * (Simplificado para MongoDB - puede necesitar modelo Invoice)
  */
 export async function getClientAccountsReceivable(userId) {
-  const result = await query(
-    `SELECT ar.*, i.invoice_number, i.issue_date, i.total_amount
-     FROM accounts_receivable ar
-     LEFT JOIN invoices i ON ar.invoice_id = i.id
-     WHERE ar.client_id = $1 AND ar.status != 'paid'
-     ORDER BY ar.due_date ASC`,
-    [userId]
-  )
-
-  return result.rows.map(row => ({
-    id: row.id,
-    invoiceId: row.invoice_id,
-    invoiceNumber: row.invoice_number,
-    originalAmount: parseFloat(row.original_amount),
-    paidAmount: parseFloat(row.paid_amount),
-    balance: parseFloat(row.balance),
-    dueDate: row.due_date,
-    daysOverdue: row.days_overdue,
-    status: row.status,
-    issueDate: row.issue_date
-  }))
+  // Por ahora retornar array vacío - se puede implementar cuando tengamos modelo Invoice
+  return []
 }
 
 /**
  * Formatear cliente
  */
-function formatClient(row) {
+function formatClient(doc) {
   return {
-    id: row.id,
-    userId: row.user_id,
-    email: row.email,
-    nombre: row.nombre,
-    razonSocial: row.razon_social,
-    rut: row.rut,
-    giro: row.giro,
-    direccion: row.direccion,
-    comuna: row.comuna,
-    emailFacturacion: row.email_facturacion,
-    activo: row.activo,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
+    id: doc._id?.toString() || doc.id,
+    userId: doc.user_id,
+    email: doc.email,
+    nombre: doc.nombre,
+    razonSocial: doc.razon_social,
+    rut: doc.rut,
+    giro: doc.giro,
+    direccion: doc.direccion,
+    comuna: doc.comuna,
+    emailFacturacion: doc.email_facturacion,
+    activo: doc.activo,
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt
   }
 }
 

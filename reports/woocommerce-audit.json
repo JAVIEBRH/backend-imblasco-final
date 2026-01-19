@@ -1,0 +1,180 @@
+{
+  "generatedAt": "2026-01-18T02:42:00.946Z",
+  "totals": {
+    "products": 1476,
+    "simple": 928,
+    "variable": 548,
+    "other": 0,
+    "variations": 2147
+  },
+  "missing": {
+    "noSkuCount": 5,
+    "noDescriptionCount": 1472
+  },
+  "topCategories": [
+    [
+      "Trofeos Plásticos",
+      269
+    ],
+    [
+      "Regalos y Trofeos Premium",
+      212
+    ],
+    [
+      "Artículos Publicitarios",
+      194
+    ],
+    [
+      "Novedades Publicitarios",
+      184
+    ],
+    [
+      "Copas Línea Comercial",
+      149
+    ],
+    [
+      "Novedades Trofeos y Premios",
+      122
+    ],
+    [
+      "Novedades",
+      120
+    ],
+    [
+      "Accesorios-Herramientas",
+      119
+    ],
+    [
+      "Botellas-Mugs-Tazones-Termos-Vasos",
+      116
+    ],
+    [
+      "Copas 2024-2025",
+      96
+    ],
+    [
+      "Línea Cobre",
+      91
+    ],
+    [
+      "Copas y Torres",
+      89
+    ],
+    [
+      "Insumos",
+      85
+    ],
+    [
+      "Llaveros",
+      81
+    ],
+    [
+      "Bolígrafos-Lápices-Estuches",
+      74
+    ]
+  ],
+  "sampleMissingSku": [
+    {
+      "id": 18635,
+      "name": "Matrices para Máquina de Chapas"
+    },
+    {
+      "id": 16911,
+      "name": "Rack Liviano Mod. Rk10"
+    },
+    {
+      "id": 16780,
+      "name": "Rack Pesado Mod. RK 20"
+    },
+    {
+      "id": 10753,
+      "name": "Pump 28/410 330 ml."
+    },
+    {
+      "id": 10746,
+      "name": "Pump 28/410 1Litro"
+    }
+  ],
+  "sampleMissingDescription": [
+    {
+      "id": 30723,
+      "name": "Copa CJ"
+    },
+    {
+      "id": 30717,
+      "name": "Copa ZK"
+    },
+    {
+      "id": 30712,
+      "name": "Copa CN"
+    },
+    {
+      "id": 30706,
+      "name": "Copa DAN"
+    },
+    {
+      "id": 30678,
+      "name": "Destacador resaltador HIGHLIGHTER B17"
+    },
+    {
+      "id": 30659,
+      "name": "Libreta White PU N35"
+    },
+    {
+      "id": 30653,
+      "name": "Libreta White PU N42"
+    },
+    {
+      "id": 30578,
+      "name": "Bolígrafo Metálico L88"
+    },
+    {
+      "id": 30576,
+      "name": "Bolígrafo Metálico L87"
+    },
+    {
+      "id": 30573,
+      "name": "Bolígrafo Metálico L74"
+    },
+    {
+      "id": 30571,
+      "name": "Bolígrafo engomado color gris/cobre L73"
+    },
+    {
+      "id": 30562,
+      "name": "Bolígrafo plástico opaco L72"
+    },
+    {
+      "id": 30557,
+      "name": "Bolígrafo Plástico L71"
+    },
+    {
+      "id": 30549,
+      "name": "Bolígrafo Plástico Colores L70"
+    },
+    {
+      "id": 30540,
+      "name": "Bolígrafo Plástico blanco L68"
+    },
+    {
+      "id": 30534,
+      "name": "Bolígrafo plástico blanco colores L69"
+    },
+    {
+      "id": 30528,
+      "name": "Bolígrafo Plástico Colores L67"
+    },
+    {
+      "id": 30519,
+      "name": "Bolígrafo Plástico Colores L66"
+    },
+    {
+      "id": 30512,
+      "name": "Bolígrafo plástico colores L65"
+    },
+    {
+      "id": 30440,
+      "name": "Galvano Cristal con Base de Madera BLAS 30"
+    }
+  ]
+}

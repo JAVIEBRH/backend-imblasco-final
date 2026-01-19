@@ -1,30 +1,23 @@
 /**
- * STOCK MOVEMENT SERVICE
+ * STOCK MOVEMENT SERVICE (MongoDB)
  * Servicio de movimientos de inventario
  */
 
-import { query, getClient } from '../config/database.js'
+import { StockMovement } from '../models/index.js'
+import { Product } from '../models/index.js'
 
 /**
  * Registrar movimiento de stock
  */
 export async function recordStockMovement(movementData) {
-  const client = await getClient()
-  
   try {
-    await client.query('BEGIN')
-
     // Obtener stock actual del producto
-    const productResult = await query(
-      'SELECT id, stock FROM products WHERE sku = $1',
-      [movementData.sku]
-    )
-
-    if (productResult.rows.length === 0) {
+    const product = await Product.findOne({ sku: movementData.sku.toUpperCase() })
+    
+    if (!product) {
       throw new Error(`Producto con SKU ${movementData.sku} no encontrado`)
     }
 
-    const product = productResult.rows[0]
     const previousStock = product.stock
     const quantity = parseInt(movementData.quantity)
     const newStock = previousStock + quantity
@@ -34,51 +27,44 @@ export async function recordStockMovement(movementData) {
     }
 
     // Registrar movimiento
-    const movementResult = await client.query(
-      `INSERT INTO stock_movements (
-        product_id, sku, movement_type, quantity,
-        previous_stock, new_stock,
-        reference_type, reference_id, reason, notes, created_by
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-      RETURNING *`,
-      [
-        product.id,
-        movementData.sku,
-        movementData.movementType,
-        quantity,
-        previousStock,
-        newStock,
-        movementData.referenceType || null,
-        movementData.referenceId || null,
-        movementData.reason || null,
-        movementData.notes || null,
-        movementData.createdBy || 'system'
-      ]
-    )
+    const movement = await StockMovement.create({
+      product_id: product._id.toString(),
+      sku: movementData.sku.toUpperCase(),
+      movement_type: movementData.movementType,
+      quantity: quantity,
+      previous_stock: previousStock,
+      new_stock: newStock,
+      reference_type: movementData.referenceType || null,
+      reference_id: movementData.referenceId || null,
+      reason: movementData.reason || null,
+      notes: movementData.notes || null,
+      created_by: movementData.createdBy || 'system'
+    })
 
     // Actualizar stock del producto
-    await query(
-      'UPDATE products SET stock = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      [newStock, product.id]
+    await Product.findByIdAndUpdate(
+      product._id,
+      {
+        $set: {
+          stock: newStock,
+          updatedAt: new Date()
+        }
+      }
     )
 
-    await client.query('COMMIT')
-
     return {
-      id: movementResult.rows[0].id,
+      id: movement._id.toString(),
       sku: movementData.sku,
       movementType: movementData.movementType,
       quantity,
       previousStock,
       newStock,
-      createdAt: movementResult.rows[0].created_at
+      createdAt: movement.createdAt
     }
 
   } catch (error) {
-    await client.query('ROLLBACK')
+    console.error('[STOCK_MOVEMENT] Error recording movement:', error)
     throw error
-  } finally {
-    client.release()
   }
 }
 
@@ -86,73 +72,85 @@ export async function recordStockMovement(movementData) {
  * Obtener movimientos de stock
  */
 export async function getStockMovements(filters = {}) {
-  let sql = `SELECT sm.*, p.name as product_name
-             FROM stock_movements sm
-             LEFT JOIN products p ON sm.product_id = p.id
-             WHERE 1=1`
-  
-  const params = []
-  let paramCount = 1
+  try {
+    const query = {}
 
-  if (filters.sku) {
-    sql += ` AND sm.sku = $${paramCount}`
-    params.push(filters.sku)
-    paramCount++
+    if (filters.sku) {
+      query.sku = filters.sku.toUpperCase()
+    }
+
+    if (filters.movementType) {
+      query.movement_type = filters.movementType
+    }
+
+    if (filters.dateFrom || filters.dateTo) {
+      query.createdAt = {}
+      if (filters.dateFrom) {
+        query.createdAt.$gte = new Date(filters.dateFrom)
+      }
+      if (filters.dateTo) {
+        query.createdAt.$lte = new Date(filters.dateTo)
+      }
+    }
+
+    const movements = await StockMovement.find(query)
+      .sort({ createdAt: -1 })
+      .limit(1000)
+      .lean()
+
+    // Obtener nombres de productos
+    const skus = [...new Set(movements.map(m => m.sku))]
+    const products = await Product.find({ sku: { $in: skus } })
+      .select('sku name')
+      .lean()
+    
+    const productMap = {}
+    products.forEach(p => {
+      productMap[p.sku] = p.name
+    })
+
+    return movements.map(movement => ({
+      id: movement._id.toString(),
+      sku: movement.sku,
+      productName: productMap[movement.sku] || movement.sku,
+      movementType: movement.movement_type,
+      quantity: movement.quantity,
+      previousStock: movement.previous_stock,
+      newStock: movement.new_stock,
+      referenceType: movement.reference_type,
+      referenceId: movement.reference_id,
+      reason: movement.reason,
+      createdAt: movement.createdAt
+    }))
+  } catch (error) {
+    console.error('[STOCK_MOVEMENT] Error getting movements:', error)
+    return []
   }
-
-  if (filters.movementType) {
-    sql += ` AND sm.movement_type = $${paramCount}`
-    params.push(filters.movementType)
-    paramCount++
-  }
-
-  if (filters.dateFrom) {
-    sql += ` AND sm.created_at >= $${paramCount}`
-    params.push(filters.dateFrom)
-    paramCount++
-  }
-
-  if (filters.dateTo) {
-    sql += ` AND sm.created_at <= $${paramCount}`
-    params.push(filters.dateTo)
-    paramCount++
-  }
-
-  sql += ' ORDER BY sm.created_at DESC LIMIT 1000'
-
-  const result = await query(sql, params)
-  return result.rows.map(row => ({
-    id: row.id,
-    sku: row.sku,
-    productName: row.product_name,
-    movementType: row.movement_type,
-    quantity: row.quantity,
-    previousStock: row.previous_stock,
-    newStock: row.new_stock,
-    referenceType: row.reference_type,
-    referenceId: row.reference_id,
-    reason: row.reason,
-    createdAt: row.created_at
-  }))
 }
 
 /**
  * Obtener productos con stock bajo
  */
 export async function getLowStockProducts(threshold = 10) {
-  const result = await query(
-    'SELECT * FROM products WHERE stock <= $1 AND stock >= 0 ORDER BY stock ASC',
-    [threshold]
-  )
+  try {
+    const products = await Product.find({
+      stock: { $lte: threshold, $gte: 0 }
+    })
+      .sort({ stock: 1 })
+      .lean()
 
-  return result.rows.map(row => ({
-    id: row.id,
-    sku: row.sku,
-    name: row.name,
-    stock: row.stock,
-    price: parseFloat(row.price),
-    needsRestock: row.stock <= threshold
-  }))
+    return products.map(product => ({
+      id: product._id.toString(),
+      sku: product.sku,
+      name: product.name,
+      stock: product.stock,
+      price: parseFloat(product.price) || 0,
+      needsRestock: product.stock <= threshold
+    }))
+  } catch (error) {
+    console.error('[STOCK_MOVEMENT] Error getting low stock products:', error)
+    return []
+  }
 }
 
 export default {
@@ -160,5 +158,3 @@ export default {
   getStockMovements,
   getLowStockProducts
 }
-
-

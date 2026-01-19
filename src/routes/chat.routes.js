@@ -5,8 +5,49 @@
 
 import { Router } from 'express'
 import * as conversationService from '../services/conversation.service.js'
+import { handleChat } from '../services/assistant.service.js'
 
 export const chatRouter = Router()
+
+/**
+ * POST /api/chat
+ * Endpoint principal del asistente IA (function calling)
+ *
+ * Body:
+ * {
+ *   session_id: string,
+ *   message: string
+ * }
+ */
+chatRouter.post('/', async (req, res, next) => {
+  try {
+    const { session_id, message } = req.body
+    console.log(`[CHAT] /api/chat session_id=${session_id} message="${(message || '').slice(0, 120)}"`)
+
+    if (!session_id || typeof session_id !== 'string' || session_id.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'session_id debe ser un string no vacío'
+      })
+    }
+
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'message debe ser un string no vacío'
+      })
+    }
+
+    const response = await handleChat({ session_id, message })
+    res.json({
+      success: true,
+      ...response
+    })
+  } catch (error) {
+    console.error('[CHAT] Error en /api/chat:', error?.message || error)
+    next(error)
+  }
+})
 
 /**
  * POST /api/chat/init

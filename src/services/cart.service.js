@@ -1,14 +1,14 @@
 /**
- * CART SERVICE (PostgreSQL)
- * Gestión de carritos de compra usando PostgreSQL
+ * CART SERVICE (MongoDB)
+ * Gestión de carritos de compra usando MongoDB
  * 
  * Características:
  * - Un carrito por usuario autenticado
  * - Consolidación automática por SKU
- * - Persistencia en PostgreSQL (tabla carts)
+ * - Persistencia en MongoDB (colección carts)
  */
 
-import { query, getClient } from '../config/database.js'
+import { Cart } from '../models/index.js'
 
 /**
  * Obtener o crear carrito de usuario
@@ -17,39 +17,17 @@ import { query, getClient } from '../config/database.js'
  */
 export async function getCart(userId) {
   try {
-    // Buscar carrito existente
-    let result = await query(
-      'SELECT id, user_id, items, created_at, updated_at FROM carts WHERE user_id = $1',
-      [userId]
-    )
-
-    if (result.rows.length > 0) {
-      const row = result.rows[0]
-      return {
-        cartId: row.id,
-        userId: row.user_id,
-        items: row.items || {},
-        createdAt: row.created_at,
-        updatedAt: row.updated_at
-      }
+    let cart = await Cart.findOne({ user_id: userId.trim() })
+    
+    if (!cart) {
+      // Crear nuevo carrito
+      cart = await Cart.create({
+        user_id: userId.trim(),
+        items: {}
+      })
     }
-
-    // Crear nuevo carrito
-    const insertResult = await query(
-      `INSERT INTO carts (user_id, items)
-       VALUES ($1, '{}'::jsonb)
-       RETURNING id, user_id, items, created_at, updated_at`,
-      [userId]
-    )
-
-    const row = insertResult.rows[0]
-    return {
-      cartId: row.id,
-      userId: row.user_id,
-      items: row.items || {},
-      createdAt: row.created_at,
-      updatedAt: row.updated_at
-    }
+    
+    return cart.toJSON()
   } catch (error) {
     console.error('[CART] Error getting cart:', error)
     throw error
@@ -79,90 +57,47 @@ export async function addToCart(userId, sku, nombre, cantidad) {
   }
 
   const normalizedSKU = sku.trim().toUpperCase()
-  const client = await getClient()
 
   try {
-    await client.query('BEGIN')
-
-    // Obtener carrito actual (sin usar getCart que puede crear otro cliente)
-    let cartResult = await client.query(
-      'SELECT id, user_id, items, created_at, updated_at FROM carts WHERE user_id = $1',
-      [userId.trim()]
-    )
-
-    let cart
-    if (cartResult.rows.length > 0) {
-      const row = cartResult.rows[0]
-      cart = {
-        cartId: row.id,
-        userId: row.user_id,
-        items: row.items || {},
-        createdAt: row.created_at,
-        updatedAt: row.updated_at
-      }
-    } else {
-      // Crear nuevo carrito
-      const insertResult = await client.query(
-        `INSERT INTO carts (user_id, items)
-         VALUES ($1, '{}'::jsonb)
-         RETURNING id, user_id, items, created_at, updated_at`,
-        [userId.trim()]
-      )
-      const row = insertResult.rows[0]
-      cart = {
-        cartId: row.id,
-        userId: row.user_id,
-        items: row.items || {},
-        createdAt: row.created_at,
-        updatedAt: row.updated_at
-      }
+    // Obtener o crear carrito
+    let cart = await Cart.findOne({ user_id: userId.trim() })
+    
+    if (!cart) {
+      cart = await Cart.create({
+        user_id: userId.trim(),
+        items: new Map()
+      })
     }
-    const items = cart.items || {}
+
+    // Inicializar items si no existe
+    if (!cart.items) {
+      cart.items = new Map()
+    }
+
+    // Convertir Map a objeto si es necesario para manipulación
+    const items = cart.items instanceof Map ? Object.fromEntries(cart.items) : (cart.items || {})
 
     // Consolidar cantidad si ya existe
     if (items[normalizedSKU]) {
       items[normalizedSKU].cantidad += cantidad
-      items[normalizedSKU].updatedAt = new Date().toISOString()
     } else {
       items[normalizedSKU] = {
-        codigo: normalizedSKU,
-        nombre,
-        cantidad,
-        addedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        sku: normalizedSKU,
+        nombre: nombre || normalizedSKU,
+        cantidad: cantidad,
+        precio: 0
       }
     }
 
-    // Actualizar en BD
-    await client.query(
-      `UPDATE carts 
-       SET items = $1::jsonb, updated_at = CURRENT_TIMESTAMP
-       WHERE user_id = $2
-       RETURNING id, user_id, items, updated_at`,
-      [JSON.stringify(items), userId]
-    )
+    // Actualizar en MongoDB (Mongoose convierte el objeto a Map automáticamente)
+    cart.items = items
+    await cart.save()
 
-    await client.query('COMMIT')
-
-    // Retornar carrito actualizado sin crear nueva conexión
-    const updatedResult = await client.query(
-      'SELECT id, user_id, items, created_at, updated_at FROM carts WHERE user_id = $1',
-      [userId.trim()]
-    )
-    const updatedRow = updatedResult.rows[0]
-    return {
-      cartId: updatedRow.id,
-      userId: updatedRow.user_id,
-      items: updatedRow.items || {},
-      createdAt: updatedRow.created_at,
-      updatedAt: updatedRow.updated_at
-    }
+    // Retornar carrito actualizado
+    return cart.toJSON()
   } catch (error) {
-    await client.query('ROLLBACK')
     console.error('[CART] Error adding to cart:', error)
     throw error
-  } finally {
-    client.release()
   }
 }
 
@@ -186,34 +121,18 @@ export async function updateCartItem(userId, sku, cantidad) {
   }
 
   const normalizedSKU = sku.trim().toUpperCase()
-  const client = await getClient()
 
   try {
-    await client.query('BEGIN')
+    const cart = await Cart.findOne({ user_id: userId.trim() })
 
-    // Obtener carrito sin crear nueva conexión
-    const cartResult = await client.query(
-      'SELECT id, user_id, items, created_at, updated_at FROM carts WHERE user_id = $1',
-      [userId.trim()]
-    )
-
-    if (cartResult.rows.length === 0) {
-      await client.query('ROLLBACK')
+    if (!cart) {
       return null
     }
 
-    const row = cartResult.rows[0]
-    const cart = {
-      cartId: row.id,
-      userId: row.user_id,
-      items: row.items || {},
-      createdAt: row.created_at,
-      updatedAt: row.updated_at
-    }
-    const items = cart.items || {}
+    // Convertir Map a objeto si es necesario
+    const items = cart.items instanceof Map ? Object.fromEntries(cart.items) : (cart.items || {})
 
     if (!items[normalizedSKU]) {
-      await client.query('ROLLBACK')
       return null
     }
 
@@ -222,37 +141,15 @@ export async function updateCartItem(userId, sku, cantidad) {
       delete items[normalizedSKU]
     } else {
       items[normalizedSKU].cantidad = cantidad
-      items[normalizedSKU].updatedAt = new Date().toISOString()
     }
 
-    await client.query(
-      `UPDATE carts 
-       SET items = $1::jsonb, updated_at = CURRENT_TIMESTAMP
-       WHERE user_id = $2`,
-      [JSON.stringify(items), userId]
-    )
+    cart.items = items
+    await cart.save()
 
-    await client.query('COMMIT')
-    
-    // Retornar carrito actualizado
-    const updatedResult = await client.query(
-      'SELECT id, user_id, items, created_at, updated_at FROM carts WHERE user_id = $1',
-      [userId.trim()]
-    )
-    const updatedRow = updatedResult.rows[0]
-    return {
-      cartId: updatedRow.id,
-      userId: updatedRow.user_id,
-      items: updatedRow.items || {},
-      createdAt: updatedRow.created_at,
-      updatedAt: updatedRow.updated_at
-    }
+    return cart.toJSON()
   } catch (error) {
-    await client.query('ROLLBACK')
     console.error('[CART] Error updating cart item:', error)
     throw error
-  } finally {
-    client.release()
   }
 }
 
@@ -272,54 +169,30 @@ export async function removeFromCart(userId, sku) {
   }
 
   const normalizedSKU = sku.trim().toUpperCase()
-  const client = await getClient()
 
   try {
-    await client.query('BEGIN')
+    const cart = await Cart.findOne({ user_id: userId.trim() })
 
-    // Obtener carrito sin crear nueva conexión
-    const cartResult = await client.query(
-      'SELECT id, user_id, items, created_at, updated_at FROM carts WHERE user_id = $1',
-      [userId.trim()]
-    )
-
-    if (cartResult.rows.length === 0) {
-      await client.query('ROLLBACK')
+    if (!cart) {
       return false
     }
 
-    const row = cartResult.rows[0]
-    const cart = {
-      cartId: row.id,
-      userId: row.user_id,
-      items: row.items || {},
-      createdAt: row.created_at,
-      updatedAt: row.updated_at
-    }
-    const items = cart.items || {}
+    // Convertir Map a objeto si es necesario
+    const items = cart.items instanceof Map ? Object.fromEntries(cart.items) : (cart.items || {})
 
     if (!items[normalizedSKU]) {
-      await client.query('ROLLBACK')
       return false
     }
 
     delete items[normalizedSKU]
 
-    await client.query(
-      `UPDATE carts 
-       SET items = $1::jsonb, updated_at = CURRENT_TIMESTAMP
-       WHERE user_id = $2`,
-      [JSON.stringify(items), userId]
-    )
+    cart.items = items
+    await cart.save()
 
-    await client.query('COMMIT')
     return true
   } catch (error) {
-    await client.query('ROLLBACK')
     console.error('[CART] Error removing from cart:', error)
     throw error
-  } finally {
-    client.release()
   }
 }
 
@@ -329,12 +202,13 @@ export async function removeFromCart(userId, sku) {
  * @returns {Promise<Object>} Carrito vacío
  */
 export async function clearCart(userId) {
-  await query(
-    `UPDATE carts 
-     SET items = '{}'::jsonb, updated_at = CURRENT_TIMESTAMP
-     WHERE user_id = $1`,
-    [userId]
-  )
+  const cart = await Cart.findOne({ user_id: userId.trim() })
+  
+  if (cart) {
+    cart.items = {}
+    await cart.save()
+  }
+  
   return await getCart(userId)
 }
 
@@ -345,18 +219,21 @@ export async function clearCart(userId) {
  */
 export async function getCartSummary(userId) {
   const cart = await getCart(userId)
-  const items = Object.values(cart.items || {})
+  
+  // Convertir items a array si es Map
+  let itemsArray
+  if (cart.items instanceof Map) {
+    itemsArray = Array.from(cart.items.values())
+  } else {
+    itemsArray = Object.values(cart.items || {})
+  }
   
   return {
     cartId: cart.cartId,
     userId: cart.userId,
-    itemCount: items.length,
-    totalUnits: items.reduce((sum, item) => sum + (item.cantidad || 0), 0),
-    items: items.map(item => ({
-      codigo: item.codigo,
-      nombre: item.nombre,
-      cantidad: item.cantidad
-    })),
+    items: cart.items || {}, // Mantener formato original para compatibilidad
+    itemCount: itemsArray.length,
+    totalUnits: itemsArray.reduce((sum, item) => sum + (item.cantidad || 0), 0),
     updatedAt: cart.updatedAt
   }
 }
@@ -368,7 +245,10 @@ export async function getCartSummary(userId) {
  */
 export async function hasItems(userId) {
   const cart = await getCart(userId)
-  return Object.keys(cart.items || {}).length > 0
+  
+  // Convertir items a objeto para contar
+  const items = cart.items instanceof Map ? Object.fromEntries(cart.items) : (cart.items || {})
+  return Object.keys(items).length > 0
 }
 
 /**
@@ -378,8 +258,17 @@ export async function hasItems(userId) {
  */
 export async function getItemsForOrder(userId) {
   const cart = await getCart(userId)
-  return Object.values(cart.items || {}).map(item => ({
-    codigo: item.codigo,
+  
+  // Convertir items a array si es Map
+  let itemsArray
+  if (cart.items instanceof Map) {
+    itemsArray = Array.from(cart.items.values())
+  } else {
+    itemsArray = Object.values(cart.items || {})
+  }
+  
+  return itemsArray.map(item => ({
+    codigo: item.sku || item.codigo,
     nombre: item.nombre,
     cantidad: item.cantidad
   }))
