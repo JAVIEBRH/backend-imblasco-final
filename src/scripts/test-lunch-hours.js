@@ -118,17 +118,20 @@ const CORRECT_RESPONSE_KEYWORDS = [
 ]
 
 // Palabras clave que indican respuesta INCORRECTA (que sí se atiende)
+// IMPORTANTE: Solo detectar cuando NO está negado (no "no atendemos")
 const INCORRECT_RESPONSE_KEYWORDS = [
-  'sí atendemos',
-  'si atendemos',
-  'sí atienden',
-  'si atienden',
-  'sí se atiende',
-  'si se atiende',
-  'atendemos durante',
-  'atienden durante',
-  'sí, atendemos',
-  'si, atendemos',
+  'sí atendemos durante',
+  'si atendemos durante',
+  'sí atienden durante',
+  'si atienden durante',
+  'sí se atiende durante',
+  'si se atiende durante',
+  'sí, atendemos durante',
+  'si, atendemos durante',
+  'atendemos durante la hora de almuerzo',
+  'atienden durante la hora de almuerzo',
+  'sí atendemos a la hora de almuerzo',
+  'si atendemos a la hora de almuerzo',
 ]
 
 function sleep(ms) {
@@ -142,27 +145,41 @@ function checkResponseIsCorrect(responseText) {
   
   const lowerResponse = responseText.toLowerCase()
   
-  // Verificar que NO contenga palabras incorrectas
-  const hasIncorrectKeywords = INCORRECT_RESPONSE_KEYWORDS.some(keyword => 
-    lowerResponse.includes(keyword.toLowerCase())
-  )
-  
-  if (hasIncorrectKeywords) {
-    return { 
-      isCorrect: false, 
-      reason: 'Respuesta contiene palabras que indican que SÍ se atiende (INCORRECTO)' 
-    }
-  }
-  
-  // Verificar que contenga palabras correctas
+  // PRIMERO: Verificar que contenga palabras correctas (que NO se atiende)
+  // Esto tiene prioridad porque la respuesta puede empezar con "Atendemos..." pero luego decir "NO atendemos durante..."
   const hasCorrectKeywords = CORRECT_RESPONSE_KEYWORDS.some(keyword => 
     lowerResponse.includes(keyword.toLowerCase())
   )
   
   if (!hasCorrectKeywords) {
+    // Si no tiene palabras correctas, verificar si tiene palabras incorrectas
+    const hasIncorrectKeywords = INCORRECT_RESPONSE_KEYWORDS.some(keyword => 
+      lowerResponse.includes(keyword.toLowerCase())
+    )
+    
+    if (hasIncorrectKeywords) {
+      return { 
+        isCorrect: false, 
+        reason: 'Respuesta contiene palabras que indican que SÍ se atiende durante el almuerzo (INCORRECTO)' 
+      }
+    }
+    
     return { 
       isCorrect: false, 
       reason: 'Respuesta no contiene palabras clave que indiquen que NO se atiende' 
+    }
+  }
+  
+  // Si tiene palabras correctas, verificar que NO tenga palabras incorrectas en contexto de almuerzo
+  // Pero solo si están en el contexto de "durante el almuerzo" o similar
+  const hasIncorrectInLunchContext = INCORRECT_RESPONSE_KEYWORDS.some(keyword => 
+    lowerResponse.includes(keyword.toLowerCase())
+  )
+  
+  if (hasIncorrectInLunchContext) {
+    return { 
+      isCorrect: false, 
+      reason: 'Respuesta contiene palabras que indican que SÍ se atiende durante el almuerzo (INCORRECTO)' 
     }
   }
   
