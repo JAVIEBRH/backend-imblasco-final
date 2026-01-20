@@ -15,7 +15,8 @@
     "drop-woo-index": "node src/scripts/drop-productos-woo-id-index.js",
     "audit-woocommerce": "node src/scripts/woocommerce-audit.js",
     "scrape": "node src/scripts/scraper.js",
-    "serve-scraped": "node src/scripts/serve-scraped.js"
+    "serve-scraped": "node src/scripts/serve-scraped.js",
+    "test-lunch-hours": "node src/scripts/test-lunch-hours.js"
   },
   "dependencies": {
     "axios": "^1.13.2",
