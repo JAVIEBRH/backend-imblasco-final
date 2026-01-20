@@ -365,17 +365,73 @@ function getLunchHoursResponse() {
 // Sesiones de usuarios (en memoria, solo para estado conversacional)
 const sessions = new Map()
 
+// Constantes para gestión de sesiones
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000 // 24 horas de inactividad
+const MAX_SESSIONS = 1000 // Límite máximo de sesiones en memoria
+
+/**
+ * Limpiar sesiones inactivas (TTL) y limitar número máximo
+ */
+function cleanupSessions() {
+  const now = Date.now()
+  const sessionsToDelete = []
+  
+  // Encontrar sesiones inactivas o exceder límite
+  for (const [userId, session] of sessions.entries()) {
+    const inactiveTime = now - session.lastActivity
+    if (inactiveTime > SESSION_TTL_MS) {
+      sessionsToDelete.push(userId)
+    }
+  }
+  
+  // Si aún hay espacio, eliminar las más antiguas primero
+  if (sessions.size >= MAX_SESSIONS) {
+    const sortedSessions = Array.from(sessions.entries())
+      .map(([userId, session]) => ({ userId, lastActivity: session.lastActivity }))
+      .sort((a, b) => a.lastActivity - b.lastActivity) // Más antiguas primero
+    
+    const toDelete = sessions.size - MAX_SESSIONS + 1 // +1 para dejar espacio
+    for (let i = 0; i < toDelete && i < sortedSessions.length; i++) {
+      if (!sessionsToDelete.includes(sortedSessions[i].userId)) {
+        sessionsToDelete.push(sortedSessions[i].userId)
+      }
+    }
+  }
+  
+  // Eliminar sesiones
+  if (sessionsToDelete.length > 0) {
+    sessionsToDelete.forEach(userId => {
+      sessions.delete(userId)
+      console.log(`[Session] 🗑️ Sesión ${userId} eliminada (inactiva o límite alcanzado)`)
+    })
+    console.log(`[Session] 🧹 Limpieza: ${sessionsToDelete.length} sesión(es) eliminada(s), ${sessions.size} activa(s)`)
+  }
+}
+
+// Ejecutar limpieza cada hora
+setInterval(cleanupSessions, 60 * 60 * 1000)
+
 /**
  * Obtener o crear sesión de usuario
  */
 function getSession(userId) {
+  // Limpiar sesiones antes de crear nueva (si está cerca del límite)
+  if (sessions.size >= MAX_SESSIONS * 0.9) {
+    cleanupSessions()
+  }
+  
   if (!sessions.has(userId)) {
     sessions.set(userId, {
       userId,
       state: STATES.IDLE,
       currentProduct: null,
-      history: []
+      history: [],
+      lastActivity: Date.now(),
+      createdAt: Date.now()
     })
+  } else {
+    // Actualizar última actividad
+    sessions.get(userId).lastActivity = Date.now()
   }
   return sessions.get(userId)
 }
@@ -384,13 +440,19 @@ function getSession(userId) {
  * Guardar mensaje en historial
  */
 function addToHistory(session, sender, message) {
+  // Actualizar última actividad al agregar mensaje
+  session.lastActivity = Date.now()
+  
   session.history.push({
     sender,
     message,
     timestamp: new Date().toISOString()
   })
-  if (session.history.length > 50) {
-    session.history = session.history.slice(-50)
+  
+  // Limitar historial a 50 mensajes para evitar memory leak
+  const MAX_HISTORY = 50
+  if (session.history.length > MAX_HISTORY) {
+    session.history = session.history.slice(-MAX_HISTORY)
   }
 }
 
@@ -2339,8 +2401,15 @@ INSTRUCCIONES OBLIGATORIAS:
         // Si tiene variaciones Y el producto principal tiene stock_quantity definido, usar el stock del producto principal
         // Si tiene variaciones Y el producto principal tiene stock_quantity = null, sumar las variaciones
         if (hasVariations) {
-          // Si el producto principal tiene stock definido, es stock compartido - usar ese valor
-          if (productStockData.stock_quantity !== null && productStockData.stock_quantity !== undefined) {
+          // CRÍTICO: Validar manage_stock para determinar si es stock compartido o individual
+          // Si manage_stock = true → Stock compartido (usa stock del producto principal)
+          // Si manage_stock = false → Stock individual (suma de variaciones)
+          const isSharedStock = productStockData.manage_stock === true && 
+                                productStockData.stock_quantity !== null && 
+                                productStockData.stock_quantity !== undefined
+          
+          if (isSharedStock) {
+            // Stock compartido - usar stock del producto principal
             const mainStock = parseInt(productStockData.stock_quantity)
             if (isNaN(mainStock)) {
               console.warn(`[WooCommerce] ⚠️ Stock inválido (NaN) para producto principal ${productStockData.sku || productStockData.id}`)

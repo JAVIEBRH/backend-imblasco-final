@@ -37,47 +37,131 @@ function getAuthHeader() {
 }
 
 /**
- * Hacer petición a WooCommerce API
- * @param {boolean} returnHeaders - Si es true, devuelve { data, headers }
+ * Retry con backoff exponencial para errores transitorios
+ * @param {Function} fn - Función a ejecutar
+ * @param {number} maxRetries - Número máximo de reintentos (default: 3)
+ * @param {number} baseDelay - Delay base en ms (default: 1000)
+ * @returns {Promise} Resultado de la función
  */
-async function wcRequest(endpoint, options = {}, returnHeaders = false) {
+async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000) {
+  let lastError
+  
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn()
+    } catch (error) {
+      lastError = error
+      
+      // Si es el último intento, lanzar el error
+      if (attempt === maxRetries) {
+        throw error
+      }
+      
+      // Determinar si es un error transitorio que merece retry
+      const isTransientError = 
+        error.message?.includes('429') || // Rate limit
+        error.message?.includes('500') || // Server error
+        error.message?.includes('502') || // Bad gateway
+        error.message?.includes('503') || // Service unavailable
+        error.message?.includes('504') || // Gateway timeout
+        error.message?.includes('timeout') ||
+        error.message?.includes('ECONNRESET') ||
+        error.message?.includes('ETIMEDOUT')
+      
+      if (!isTransientError) {
+        // Error no transitorio (404, 401, etc.) - no retry
+        throw error
+      }
+      
+      // Calcular delay exponencial: 1s, 2s, 4s, 8s...
+      const delay = baseDelay * Math.pow(2, attempt)
+      console.warn(`[WooCommerce] ⚠️ Error transitorio (intento ${attempt + 1}/${maxRetries + 1}), reintentando en ${delay}ms...`)
+      await new Promise(resolve => setTimeout(resolve, delay))
+    }
+  }
+  
+  throw lastError
+}
+
+/**
+ * Hacer petición a WooCommerce API con retry automático para errores transitorios
+ * @param {string} endpoint - Endpoint de la API
+ * @param {Object} options - Opciones de la petición
+ * @param {boolean} returnHeaders - Si es true, devuelve { data, headers }
+ * @param {number} timeout - Timeout en ms (default: 30000)
+ * @returns {Promise} Datos de la respuesta
+ */
+async function wcRequest(endpoint, options = {}, returnHeaders = false, timeout = 30000) {
   const { WC_URL } = getWooCommerceConfig()
   const url = `${WC_URL}/wp-json/wc/v3/${endpoint}`
   
-  try {
-    const response = await fetch(url, {
-      method: options.method || 'GET',
-      headers: {
-        'Authorization': getAuthHeader(),
-        'Content-Type': 'application/json',
-        ...options.headers
-      },
-      ...options
-    })
+  return retryWithBackoff(async () => {
+    // Crear AbortController para timeout
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), timeout)
     
-    if (!response.ok) {
-      const errorText = await response.text()
-      console.error(`❌ Error WooCommerce API (${response.status}):`, errorText.substring(0, 200))
-      throw new Error(`WooCommerce API error: ${response.status} ${response.statusText}`)
-    }
-    
-    const data = await response.json()
-    
-    if (returnHeaders) {
-      return {
-        data,
+    try {
+      const response = await fetch(url, {
+        method: options.method || 'GET',
         headers: {
-          total: response.headers.get('X-WP-Total'),
-          totalPages: response.headers.get('X-WP-TotalPages')
+          'Authorization': getAuthHeader(),
+          'Content-Type': 'application/json',
+          ...options.headers
+        },
+        signal: controller.signal,
+        ...options
+      })
+      
+      clearTimeout(timeoutId)
+      
+      // Manejar errores HTTP específicos
+      if (!response.ok) {
+        const status = response.status
+        const errorText = await response.text()
+        
+        // Errores que NO deben retry (errores del cliente)
+        if (status === 404) {
+          // Producto no encontrado - NO inventar que existe
+          throw new Error(`Producto no encontrado (404)`)
+        }
+        if (status === 401 || status === 403) {
+          // No autorizado - problema de credenciales
+          throw new Error(`Error de autenticación WooCommerce (${status})`)
+        }
+        
+        // Otros errores pueden ser transitorios
+        console.error(`❌ Error WooCommerce API (${status}):`, errorText.substring(0, 200))
+        const error = new Error(`WooCommerce API error: ${status} ${response.statusText}`)
+        error.status = status
+        throw error
+      }
+      
+      const data = await response.json()
+      
+      if (returnHeaders) {
+        return {
+          data,
+          headers: {
+            total: response.headers.get('X-WP-Total'),
+            totalPages: response.headers.get('X-WP-TotalPages')
+          }
         }
       }
+      
+      return data
+    } catch (error) {
+      clearTimeout(timeoutId)
+      
+      if (error.name === 'AbortError') {
+        const timeoutError = new Error(`Timeout consultando WooCommerce (${timeout}ms)`)
+        timeoutError.isTimeout = true
+        throw timeoutError
+      }
+      
+      // Re-lanzar error para que retryWithBackoff lo maneje
+      throw error
     }
-    
-    return data
-  } catch (error) {
-    console.error(`❌ Error conectando a WooCommerce:`, error.message)
-    throw error
-  }
+  })
 }
 
 /**
@@ -205,26 +289,47 @@ export async function getAllProducts() {
     }
     
     // Si hay más páginas, obtenerlas todas
+    // CRÍTICO: NO silenciar errores - si una página falla, debe notificarse
     if (totalPages > 1) {
       const pagePromises = []
+      const pageErrors = []
+      
       for (let page = 2; page <= totalPages; page++) {
         pagePromises.push(
           wcRequest(`products?per_page=100&page=${page}&status=publish`)
             .then(products => {
               console.log(`[WooCommerce] Página ${page}/${totalPages} obtenida: ${Array.isArray(products) ? products.length : 0} productos`)
-              return Array.isArray(products) ? products : []
+              return { page, products: Array.isArray(products) ? products : [], error: null }
             })
             .catch(error => {
-              console.error(`[WooCommerce] Error obteniendo página ${page}:`, error.message)
-              return []
+              // NO silenciar errores - registrar para notificar
+              console.error(`[WooCommerce] ❌ Error obteniendo página ${page}/${totalPages}:`, error.message)
+              pageErrors.push({ page, error: error.message })
+              return { page, products: [], error: error.message }
             })
         )
       }
       
       const remainingPages = await Promise.all(pagePromises)
-      remainingPages.forEach(pageProducts => {
-        allProducts = allProducts.concat(pageProducts)
+      
+      // Procesar resultados y verificar errores
+      remainingPages.forEach(pageResult => {
+        if (pageResult.error) {
+          // Error ya fue logueado, pero no agregamos productos vacíos
+          // Esto evita falsos negativos - si la página falló, no asumimos que no hay productos
+          console.warn(`[WooCommerce] ⚠️ Página ${pageResult.page} falló - productos de esta página no incluidos`)
+        } else {
+          allProducts = allProducts.concat(pageResult.products)
+        }
       })
+      
+      // Si hubo errores, notificar pero no fallar completamente
+      if (pageErrors.length > 0) {
+        console.warn(`[WooCommerce] ⚠️ ${pageErrors.length} página(s) fallaron de ${totalPages - 1} páginas adicionales`)
+        console.warn(`[WooCommerce] ⚠️ Páginas con error:`, pageErrors.map(e => e.page).join(', '))
+        // NO lanzar error - retornar productos obtenidos parcialmente
+        // El sistema puede funcionar con datos parciales, pero debe estar claro que son parciales
+      }
     }
     
     console.log(`[WooCommerce] ✅ Total de productos obtenidos: ${allProducts.length}`)
@@ -389,24 +494,39 @@ export async function getProductVariations(productId) {
     // Si hay más páginas, obtenerlas todas
     if (totalPages > 1) {
       const pagePromises = []
+      const pageErrors = []
       for (let page = 2; page <= totalPages; page++) {
         pagePromises.push(
           wcRequest(`products/${productId}/variations?per_page=100&page=${page}&status=publish`)
             .then(variations => {
               console.log(`[WooCommerce] Variaciones página ${page}/${totalPages}: ${Array.isArray(variations) ? variations.length : 0}`)
-              return Array.isArray(variations) ? variations : []
+              return { page, variations: Array.isArray(variations) ? variations : [], error: null }
             })
             .catch(error => {
-              console.error(`[WooCommerce] Error obteniendo variaciones página ${page}:`, error.message)
-              return []
+              // NO silenciar errores - registrar para notificar
+              console.error(`[WooCommerce] ❌ Error obteniendo variaciones página ${page}/${totalPages}:`, error.message)
+              pageErrors.push({ page, error: error.message })
+              return { page, variations: [], error: error.message }
             })
         )
       }
       
       const remainingPages = await Promise.all(pagePromises)
-      remainingPages.forEach(pageVariations => {
-        allVariations = allVariations.concat(pageVariations)
+      
+      // Procesar resultados y verificar errores
+      remainingPages.forEach(pageResult => {
+        if (pageResult.error) {
+          console.warn(`[WooCommerce] ⚠️ Variaciones página ${pageResult.page} falló - variaciones de esta página no incluidas`)
+        } else {
+          allVariations = allVariations.concat(pageResult.variations)
+        }
       })
+      
+      // Si hubo errores, notificar pero no fallar completamente
+      if (pageErrors.length > 0) {
+        console.warn(`[WooCommerce] ⚠️ ${pageErrors.length} página(s) de variaciones fallaron de ${totalPages - 1} páginas adicionales`)
+        console.warn(`[WooCommerce] ⚠️ Páginas con error:`, pageErrors.map(e => e.page).join(', '))
+      }
     }
     
     console.log(`[WooCommerce] ✅ Total de variaciones obtenidas para producto ${productId}: ${allVariations.length}`)

@@ -687,7 +687,15 @@ export async function handleChat({ session_id, message }) {
 
     for (const toolCall of toolCalls) {
       const toolName = toolCall.function.name;
-      const args = JSON.parse(toolCall.function.arguments || '{}');
+      let args
+      try {
+        args = JSON.parse(toolCall.function.arguments || '{}');
+      } catch (parseError) {
+        console.error(`[ASSISTANT] ❌ Error parseando arguments de toolCall:`, parseError.message)
+        console.error(`[ASSISTANT] Arguments recibidos:`, toolCall.function.arguments?.substring(0, 200))
+        // Continuar con objeto vacío - NO inventar argumentos
+        args = {}
+      }
       console.log(`[ASSISTANT] Ejecutando tool=${toolName} args=${JSON.stringify(args)}`);
 
       if (toolName === 'consultar_stock') {

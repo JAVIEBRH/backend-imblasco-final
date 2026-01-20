@@ -424,7 +424,24 @@ Respuesta (SOLO el JSON, sin explicaciones adicionales):`
     const resultado = response.choices[0]?.message?.content?.trim() || ''
     
     try {
-      const analisis = JSON.parse(resultado)
+      let analisis
+      try {
+        analisis = JSON.parse(resultado)
+      } catch (parseError) {
+        console.error(`[IA] ❌ Error parseando JSON de OpenAI:`, parseError.message)
+        console.error(`[IA] Contenido recibido:`, resultado.substring(0, 200))
+        // Retornar análisis por defecto seguro - NO inventar datos
+        return {
+          tipo: 'AMBIGUA',
+          termino: null,
+          SKU: null,
+          atributo: null,
+          valorAtributo: null,
+          tipoFallback: null,
+          necesitaMasInfo: true,
+          error: 'Error procesando respuesta de IA'
+        }
+      }
       
       // VALIDACIONES ESTRICTAS para evitar falsos positivos
       // 1. Validar que el tipo sea uno de los permitidos
