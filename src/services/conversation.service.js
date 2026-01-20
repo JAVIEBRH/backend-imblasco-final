@@ -2333,21 +2333,34 @@ INSTRUCCIONES OBLIGATORIAS:
         const hasVariations = context.productVariations && context.productVariations.length > 0 && !isVariation
         
         let stockInfo = ''
-        // Si tiene variaciones, el stock del producto principal puede ser null (stock gestionado por variaciones)
-        // En ese caso, calcular el stock total sumando las variaciones
+        // En WooCommerce, productos variables pueden tener:
+        // 1. Stock gestionado a nivel de variaciones (producto principal stock_quantity = null)
+        // 2. Stock compartido a nivel del producto principal (todas las variaciones comparten el stock del padre)
+        // Si tiene variaciones Y el producto principal tiene stock_quantity definido, usar el stock del producto principal
+        // Si tiene variaciones Y el producto principal tiene stock_quantity = null, sumar las variaciones
         if (hasVariations) {
-          // Calcular stock total sumando las variaciones
-          const totalStock = context.productVariations.reduce((sum, v) => {
-            const vStock = v.stock_quantity !== null && v.stock_quantity !== undefined 
-              ? parseInt(v.stock_quantity) 
-              : 0
-            return sum + (vStock > 0 ? vStock : 0)
-          }, 0)
-          
-          if (totalStock > 0) {
-            stockInfo = `${totalStock} unidad${totalStock !== 1 ? 'es' : ''} disponible${totalStock > 1 ? 's' : ''} (suma de variaciones)`
+          // Si el producto principal tiene stock definido, es stock compartido - usar ese valor
+          if (productStockData.stock_quantity !== null && productStockData.stock_quantity !== undefined) {
+            const mainStock = parseInt(productStockData.stock_quantity)
+            if (mainStock > 0) {
+              stockInfo = `${mainStock} unidad${mainStock !== 1 ? 'es' : ''} disponible${mainStock > 1 ? 's' : ''}`
+            } else {
+              stockInfo = 'Stock agotado (0 unidades)'
+            }
           } else {
-            stockInfo = 'Stock agotado (0 unidades)'
+            // Stock gestionado por variaciones - calcular suma
+            const totalStock = context.productVariations.reduce((sum, v) => {
+              const vStock = v.stock_quantity !== null && v.stock_quantity !== undefined 
+                ? parseInt(v.stock_quantity) 
+                : 0
+              return sum + (vStock > 0 ? vStock : 0)
+            }, 0)
+            
+            if (totalStock > 0) {
+              stockInfo = `${totalStock} unidad${totalStock !== 1 ? 'es' : ''} disponible${totalStock > 1 ? 's' : ''} (suma de variaciones)`
+            } else {
+              stockInfo = 'Stock agotado (0 unidades)'
+            }
           }
         } else if (productStockData.stock_quantity !== null && productStockData.stock_quantity !== undefined) {
           // Si stock_quantity está definido, usarlo siempre
