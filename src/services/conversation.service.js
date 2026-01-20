@@ -2342,8 +2342,11 @@ INSTRUCCIONES OBLIGATORIAS:
           // Si el producto principal tiene stock definido, es stock compartido - usar ese valor
           if (productStockData.stock_quantity !== null && productStockData.stock_quantity !== undefined) {
             const mainStock = parseInt(productStockData.stock_quantity)
-            if (mainStock > 0) {
-              stockInfo = `${mainStock} unidad${mainStock !== 1 ? 'es' : ''} disponible${mainStock > 1 ? 's' : ''}`
+            if (isNaN(mainStock)) {
+              console.warn(`[WooCommerce] ⚠️ Stock inválido (NaN) para producto principal ${productStockData.sku || productStockData.id}`)
+              stockInfo = productStockData.stock_status === 'instock' ? 'disponible en stock' : 'Stock agotado (0 unidades)'
+            } else if (mainStock > 0) {
+              stockInfo = `${mainStock} unidad${mainStock !== 1 ? 'es' : ''} disponible${mainStock > 1 ? 's' : ''} (stock compartido entre variaciones)`
             } else {
               stockInfo = 'Stock agotado (0 unidades)'
             }
@@ -2353,7 +2356,19 @@ INSTRUCCIONES OBLIGATORIAS:
               const vStock = v.stock_quantity !== null && v.stock_quantity !== undefined 
                 ? parseInt(v.stock_quantity) 
                 : 0
-              return sum + (vStock > 0 ? vStock : 0)
+              
+              // Validar que no sea NaN ni negativo
+              if (isNaN(vStock)) {
+                console.warn(`[WooCommerce] ⚠️ Stock inválido (NaN) en variación ${v.sku || v.id}: ${v.stock_quantity}`)
+                return sum
+              }
+              
+              if (vStock < 0) {
+                console.warn(`[WooCommerce] ⚠️ Stock negativo en variación ${v.sku || v.id}: ${v.stock_quantity}`)
+                return sum
+              }
+              
+              return sum + vStock  // Incluir 0 en la suma para consistencia
             }, 0)
             
             if (totalStock > 0) {
@@ -2364,8 +2379,13 @@ INSTRUCCIONES OBLIGATORIAS:
           }
         } else if (productStockData.stock_quantity !== null && productStockData.stock_quantity !== undefined) {
           // Si stock_quantity está definido, usarlo siempre
-          if (productStockData.stock_quantity > 0) {
-            stockInfo = `${productStockData.stock_quantity} unidad${productStockData.stock_quantity > 1 ? 'es' : ''} disponible${productStockData.stock_quantity > 1 ? 's' : ''}`
+          const stockQty = parseInt(productStockData.stock_quantity)
+          
+          if (isNaN(stockQty)) {
+            console.warn(`[WooCommerce] ⚠️ Stock inválido (NaN) para producto ${productStockData.sku || productStockData.id}`)
+            stockInfo = productStockData.stock_status === 'instock' ? 'disponible en stock' : 'Stock agotado (0 unidades)'
+          } else if (stockQty > 0) {
+            stockInfo = `${stockQty} unidad${stockQty !== 1 ? 'es' : ''} disponible${stockQty > 1 ? 's' : ''}`
           } else {
             // Stock es 0: mostrar como agotado
             stockInfo = 'Stock agotado (0 unidades)'
@@ -2393,10 +2413,31 @@ INSTRUCCIONES OBLIGATORIAS:
         // Si hay variaciones disponibles (producto variable), incluirlas
         let variationsInfo = ''
         if (hasVariations) {
+          // Determinar si es stock compartido o individual
+          const isSharedStock = productStockData.stock_quantity !== null && productStockData.stock_quantity !== undefined
+          
           const variationsList = context.productVariations.slice(0, 5).map(v => {
-            const vStock = v.stock_quantity !== null && v.stock_quantity !== undefined
-              ? `${v.stock_quantity} unidad${v.stock_quantity !== 1 ? 'es' : ''}`
-              : v.stock_status === 'instock' ? 'disponible' : 'sin stock'
+            let vStock
+            if (isSharedStock) {
+              // Stock compartido: las variaciones no tienen stock individual
+              vStock = 'stock compartido'
+            } else {
+              // Stock individual por variación
+              if (v.stock_quantity !== null && v.stock_quantity !== undefined) {
+                const stock = parseInt(v.stock_quantity)
+                if (isNaN(stock)) {
+                  console.warn(`[WooCommerce] ⚠️ Stock inválido (NaN) en variación ${v.sku || v.id}: ${v.stock_quantity}`)
+                  vStock = v.stock_status === 'instock' ? 'disponible' : 'sin stock'
+                } else if (stock < 0) {
+                  console.warn(`[WooCommerce] ⚠️ Stock negativo en variación ${v.sku || v.id}: ${v.stock_quantity}`)
+                  vStock = v.stock_status === 'instock' ? 'disponible' : 'sin stock'
+                } else {
+                  vStock = `${stock} unidad${stock !== 1 ? 'es' : ''}`
+                }
+              } else {
+                vStock = v.stock_status === 'instock' ? 'disponible' : 'sin stock'
+              }
+            }
             const vPrice = v.price ? `$${parseFloat(v.price).toLocaleString('es-CL')}` : 'Precio N/A'
             return `  - ${v.name}${v.sku ? ` (SKU: ${v.sku})` : ''} - ${vStock} - ${vPrice}`
           }).join('\n')
