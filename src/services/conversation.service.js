@@ -286,6 +286,41 @@ function extractProductTerm(message) {
   return result
 }
 
+/**
+ * Detectar consultas específicas sobre la hora de almuerzo
+ * Solo detecta preguntas que mencionen explícitamente "almuerzo" o términos relacionados
+ * NO detecta preguntas genéricas sobre horarios (ej: "atienden a la hora de cierre")
+ * @param {string} message - Mensaje del usuario
+ * @returns {boolean}
+ */
+function isLunchHoursQuery(message) {
+  if (!message || typeof message !== 'string') return false;
+  const text = message.toLowerCase();
+  
+  // Patrones específicos que requieren mención explícita de "almuerzo" o términos relacionados
+  const lunchSpecificPatterns = [
+    /hora\s+de\s+almuerzo/i,
+    /horario\s+de\s+almuerzo/i,
+    /almuerzo/i, // Si menciona "almuerzo" explícitamente
+    /colaci[oó]n/i,
+    /atienden\s+(durante|en|a\s+la\s+hora\s+de)\s+.*almuerzo/i,
+    /atendemos\s+(durante|en|a\s+la\s+hora\s+de)\s+.*almuerzo/i,
+    /atend[eé]is\s+(durante|en|a\s+la\s+hora\s+de)\s+.*almuerzo/i,
+    /(atienden|atendemos|atend[eé]is).*almuerzo/i, // Cualquier combinación con "almuerzo"
+    /almuerzo.*(atienden|atendemos|atend[eé]is)/i, // "almuerzo" antes o después
+  ];
+  
+  return lunchSpecificPatterns.some(pattern => pattern.test(text));
+}
+
+/**
+ * Respuesta fija sobre horarios de atención (NO se atiende en hora de almuerzo)
+ * @returns {string}
+ */
+function getLunchHoursResponse() {
+  return 'Atendemos de lunes a viernes de 9:42 a 14:00 y de 15:30 a 19:00 hrs. Los sábados de 10:00 a 13:00 hrs. **No atendemos durante la hora de almuerzo.**';
+}
+
 // Sesiones de usuarios (en memoria, solo para estado conversacional)
 const sessions = new Map()
 
@@ -944,14 +979,6 @@ export async function processMessageWithAI(userId, message) {
     
     // Agregar mensaje del usuario al historial
     addToHistory(session, 'user', message)
-    
-    // Verificación temprana de consultas específicas sobre hora de almuerzo (RESPUESTA FIJA)
-    // Esta verificación debe ser ANTES del procesamiento con IA para evitar respuestas incorrectas
-    if (isLunchHoursQuery(message)) {
-      const lunchResponse = getLunchHoursResponse()
-      addToHistory(session, 'bot', lunchResponse)
-      return createResponse(lunchResponse, session.state, null, cart)
-    }
     
     // El agente está autenticado con Consumer Key/Secret de WooCommerce
     // Puede consultar stock sin necesidad de que el usuario final esté logueado
