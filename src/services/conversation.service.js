@@ -1145,6 +1145,10 @@ export async function processMessageWithAI(userId, message) {
     let productStockData = null
     let productSearchResults = []
     
+    // NOTA: La verificación de contexto se hará DESPUÉS de detectar SKU/ID explícito
+    // para evitar usar contexto cuando hay un producto específico solicitado.
+    // Por ahora, inicializar como null - se cargará después si no hay SKU/ID explícito
+    
     // Inicializar flags de validación de variantes (para evitar undefined)
     if (queryType === 'VARIANTE') {
       context.varianteValidada = undefined // Se establecerá en el bloque de validación
@@ -1181,11 +1185,9 @@ export async function processMessageWithAI(userId, message) {
       )
     }
     
-    // Si es AMBIGUA, OpenAI ya determinó que no hay suficiente información
-    // Si OpenAI detectó que se refiere al contexto, ya lo habría clasificado como PRODUCTO
-    // Por lo tanto, si llegamos aquí con AMBIGUA, realmente necesitamos más información
+    // Si es AMBIGUA, verificar si es una pregunta sobre variaciones del producto en contexto
     if (queryType === 'AMBIGUA') {
-      console.log(`[WooCommerce] ⚠️ Consulta ambigua detectada → OpenAI determinó que se necesita más información`)
+      console.log(`[WooCommerce] ⚠️ Consulta ambigua detectada → Verificando si es pregunta sobre variaciones...`)
       
       // Distinguir entre saludos genéricos y consultas ambiguas reales
       const normalizedMessage = normalizeSearchText(message).toLowerCase().trim()
@@ -1199,6 +1201,81 @@ export async function processMessageWithAI(userId, message) {
           null,
           cart
         )
+      }
+      
+      // CRÍTICO: Si hay producto en contexto y la pregunta parece ser sobre variaciones, tratarla como VARIANTE
+      const tieneProductoEnContexto = session.currentProduct || context.currentProduct || productStockData
+      const palabrasVariaciones = ['color', 'colores', 'talla', 'tallas', 'tamaño', 'tamaños', 'variacion', 'variaciones', 'variante', 'variantes', 'modelo', 'modelos', 'acabado', 'acabados']
+      const esPreguntaVariaciones = palabrasVariaciones.some(palabra => normalizedMessage.includes(palabra))
+      
+      if (esPreguntaVariaciones) {
+        if (tieneProductoEnContexto) {
+          console.log(`[WooCommerce] 🔄 Consulta ambigua detectada como pregunta de variaciones con producto en contexto`)
+          // Usar producto del contexto
+          productStockData = session.currentProduct || context.currentProduct || productStockData
+          context.productStockData = productStockData
+          
+          // Detectar atributo (color, talla, etc.)
+          let atributoDetectado = null
+          if (normalizedMessage.includes('color') || normalizedMessage.includes('colores')) {
+            atributoDetectado = 'color'
+          } else if (normalizedMessage.includes('talla') || normalizedMessage.includes('tallas')) {
+            atributoDetectado = 'talla'
+          } else if (normalizedMessage.includes('tamaño') || normalizedMessage.includes('tamaños')) {
+            atributoDetectado = 'tamaño'
+          } else if (normalizedMessage.includes('acabado') || normalizedMessage.includes('acabados')) {
+            atributoDetectado = 'acabado'
+          }
+          
+          // Cambiar queryType a VARIANTE para que se procese correctamente
+          if (atributoDetectado) {
+            queryType = 'VARIANTE'
+            // Crear análisisOpenAI simulado para VARIANTE
+            if (!analisisOpenAI) {
+              analisisOpenAI = {
+                tipo: 'VARIANTE',
+                atributo: atributoDetectado,
+                valorAtributo: null, // Sin valor específico, listar todos
+                terminoProducto: null,
+                sku: null,
+                id: null,
+                necesitaMasInfo: false
+              }
+              context.analisisOpenAI = analisisOpenAI
+            } else {
+              analisisOpenAI.tipo = 'VARIANTE'
+              analisisOpenAI.atributo = atributoDetectado
+              analisisOpenAI.valorAtributo = null
+            }
+            console.log(`[WooCommerce] ✅ Convertida a VARIANTE: atributo="${atributoDetectado}", producto del contexto: ${productStockData.name || 'N/A'}`)
+            // Continuar con el flujo de VARIANTE (no retornar aquí)
+          } else {
+            // Consulta ambigua real: pedir más información específica
+            return createResponse(
+              'Necesito el nombre completo o el SKU del producto para darte precio y stock. ¿Me lo confirmas?',
+              session.state,
+              null,
+              cart
+            )
+          }
+        } else {
+          // Pregunta sobre variaciones pero SIN producto en contexto - retornar mensaje amigable
+          console.log(`[WooCommerce] ⚠️ Pregunta sobre variaciones sin producto en contexto`)
+          let atributoNombre = 'variaciones'
+          if (normalizedMessage.includes('color') || normalizedMessage.includes('colores')) {
+            atributoNombre = 'colores'
+          } else if (normalizedMessage.includes('talla') || normalizedMessage.includes('tallas')) {
+            atributoNombre = 'tallas'
+          } else if (normalizedMessage.includes('tamaño') || normalizedMessage.includes('tamaños')) {
+            atributoNombre = 'tamaños'
+          }
+          return createResponse(
+            `Para poder mostrarte los ${atributoNombre} disponibles, necesito que me indiques el nombre completo o el SKU del producto. ¿Me lo puedes confirmar? 😊`,
+            session.state,
+            null,
+            cart
+          )
+        }
       } else {
         // Consulta ambigua real: pedir más información específica
         return createResponse(
@@ -1258,6 +1335,22 @@ export async function processMessageWithAI(userId, message) {
             console.log(`[WooCommerce] 🔍 SKU detectado (standalone): "${standaloneSkuMatch[1]}"`)
           }
           
+          // Buscar SKU solo con letras (ej: "Gal", "ABA1") cuando el mensaje es muy corto
+          // Esto es para casos especiales donde el SKU no tiene dígitos o tiene formato no estándar
+          if (detectedSkus.length === 0 && isVeryShortMessage) {
+            // Patrón para SKUs que son solo letras (2-5 caracteres) o letras seguidas de números cortos
+            const lettersOnlySkuMatch = message.match(/\b([A-Za-z]{2,5})\b/i)
+            if (lettersOnlySkuMatch) {
+              const potentialSku = lettersOnlySkuMatch[1].trim()
+              // Verificar que no sea una palabra común
+              const palabrasComunes = ['el', 'la', 'los', 'las', 'un', 'una', 'que', 'tienes', 'tienen', 'hay', 'tiene']
+              if (!palabrasComunes.includes(potentialSku.toLowerCase())) {
+                detectedSkus.push(potentialSku)
+                console.log(`[WooCommerce] 🔍 SKU solo letras detectado (standalone): "${potentialSku}"`)
+              }
+            }
+          }
+          
           // Buscar SKU numérico largo (ej: "601059110", "601050020") - sin restricción de longitud de mensaje
           // Los SKUs numéricos largos (6+ dígitos) son muy específicos y deben detectarse siempre
           if (detectedSkus.length === 0) {
@@ -1300,9 +1393,36 @@ export async function processMessageWithAI(userId, message) {
         console.log(`[WooCommerce] 🔍 ID detectado: "${providedExplicitId}"`)
       }
       
-      // Si ya tenemos un producto del contexto (consulta ambigua resuelta), omitir búsquedas adicionales
-      if (productStockData) {
-        console.log(`[WooCommerce] ✅ Producto ya encontrado desde contexto, omitiendo búsquedas adicionales`)
+      // CRÍTICO: Verificar si hay SKU/ID explícito DESPUÉS de toda la detección
+      const hasExplicitSkuOrId = providedExplicitSku || providedExplicitId
+      
+      // CRÍTICO: Si hay SKU/ID explícito, SIEMPRE buscar ese producto específico (ignorar contexto completamente)
+      // Esto previene usar productos del contexto cuando se busca un SKU específico
+      if (hasExplicitSkuOrId) {
+        console.log(`[WooCommerce] 🔍 SKU/ID explícito detectado (${providedExplicitSku || providedExplicitId}) - ignorando contexto y buscando producto específico`)
+        // Limpiar contexto para evitar usar producto anterior
+        productStockData = null
+        // NO usar contexto cuando hay SKU/ID explícito - siempre buscar
+      } else {
+        // Solo usar contexto para consultas ambiguas o de seguimiento (sin SKU/ID explícito)
+        productStockData = session.currentProduct || context.currentProduct || null
+        
+        // Si hay producto en contexto, también cargarlo en context.productStockData y cargar variaciones de sesión
+        if (productStockData) {
+          context.productStockData = productStockData
+          // CRÍTICO: Cargar variaciones de sesión si están disponibles (para preguntas de seguimiento)
+          if (session.productVariations && !context.productVariations) {
+            context.productVariations = session.productVariations
+            console.log(`[WooCommerce] 🔄 Cargadas ${session.productVariations.length} variaciones de sesión para producto del contexto`)
+          }
+          console.log(`[WooCommerce] 🔄 Usando producto del contexto: ${productStockData.name || 'N/A'} (SKU: ${productStockData.sku || 'N/A'})`)
+        }
+      }
+      
+      // CRÍTICO: Solo omitir búsquedas si hay producto en contexto Y NO hay SKU/ID explícito
+      // Si hay SKU/ID explícito, SIEMPRE buscar ese producto específico (ignorar contexto)
+      if (productStockData && !hasExplicitSkuOrId) {
+        console.log(`[WooCommerce] ✅ Producto ya encontrado desde contexto (sin SKU/ID explícito), omitiendo búsquedas adicionales`)
       } else {
       
       // Buscar por SKU primero
@@ -1314,28 +1434,70 @@ export async function processMessageWithAI(userId, message) {
           
           const productBySku = await wordpressService.getProductBySku(normalizedSku)
           if (productBySku) {
-            productStockData = productBySku
-            context.productStockData = productStockData
-            session.currentProduct = productBySku // Guardar para futuras referencias
-            console.log(`[WooCommerce] ✅ Producto encontrado por SKU explícito: ${productBySku.name || 'N/A'} (SKU: ${productBySku.sku || 'N/A'})`)
-            console.log(`   Stock: ${productBySku.stock_quantity !== null ? productBySku.stock_quantity : 'N/A'}, Precio: ${productBySku.price ? '$' + productBySku.price : 'N/A'}`)
+            // CRÍTICO: Si el producto encontrado es una variación (tiene parent_id), obtener el producto padre
+            let finalProduct = productBySku
+            if (productBySku.parent_id) {
+              console.log(`[WooCommerce] 🔄 Producto encontrado es una variación (parent_id: ${productBySku.parent_id}), obteniendo producto padre...`)
+              try {
+                const parentProduct = await wordpressService.getProductById(productBySku.parent_id)
+                if (parentProduct) {
+                  finalProduct = parentProduct
+                  console.log(`[WooCommerce] ✅ Producto padre obtenido: ${parentProduct.name || 'N/A'} (ID: ${parentProduct.id})`)
+                  
+                  // Cargar variaciones del producto padre automáticamente
+                  if (parentProduct.type === 'variable' && parentProduct.id) {
+                    console.log(`[WooCommerce] 🔄 Producto padre es variable, cargando variaciones automáticamente...`)
+                    try {
+                      const variations = await wordpressService.getProductVariations(parentProduct.id)
+                      if (variations && variations.length > 0) {
+                        context.productVariations = variations
+                        session.productVariations = variations
+                        console.log(`[WooCommerce] ✅ ${variations.length} variaciones cargadas para "${parentProduct.name}"`)
+                      }
+                    } catch (error) {
+                      console.error(`[WooCommerce] ⚠️ Error cargando variaciones: ${error.message}`)
+                    }
+                  }
+                } else {
+                  console.log(`[WooCommerce] ⚠️ No se pudo obtener producto padre, usando variación encontrada`)
+                }
+              } catch (error) {
+                console.error(`[WooCommerce] ⚠️ Error obteniendo producto padre: ${error.message}`)
+                // Continuar con la variación si falla obtener el padre
+              }
+            }
             
-            // Si es un producto variable, cargar variaciones automáticamente
-            if (productBySku.type === 'variable' && productBySku.id) {
+            productStockData = finalProduct
+            context.productStockData = productStockData
+            session.currentProduct = finalProduct // Guardar producto padre (o el producto si no es variación) para futuras referencias
+            console.log(`[WooCommerce] ✅ Producto encontrado por SKU explícito: ${finalProduct.name || 'N/A'} (SKU: ${finalProduct.sku || 'N/A'})`)
+            console.log(`   Stock: ${finalProduct.stock_quantity !== null ? finalProduct.stock_quantity : 'N/A'}, Precio: ${finalProduct.price ? '$' + finalProduct.price : 'N/A'}`)
+            
+            // Si es un producto variable (y no es variación), cargar variaciones automáticamente
+            if (finalProduct.type === 'variable' && finalProduct.id && !finalProduct.parent_id) {
               console.log(`[WooCommerce] 🔄 Producto variable detectado, cargando variaciones automáticamente...`)
               try {
-                const variations = await wordpressService.getProductVariations(productBySku.id)
+                const variations = await wordpressService.getProductVariations(finalProduct.id)
                 if (variations && variations.length > 0) {
                   context.productVariations = variations
-                  console.log(`[WooCommerce] ✅ ${variations.length} variaciones cargadas para "${productBySku.name}"`)
+                  // CRÍTICO: Guardar también en sesión para que persistan entre mensajes
+                  session.productVariations = variations
+                  console.log(`[WooCommerce] ✅ ${variations.length} variaciones cargadas para "${finalProduct.name}"`)
                 }
               } catch (error) {
                 console.error(`[WooCommerce] ⚠️ Error cargando variaciones: ${error.message}`)
               }
             }
           } else {
+            // CRÍTICO: Producto NO encontrado por SKU - limpiar contexto inmediatamente
             console.log(`[WooCommerce] ❌ No se encontró producto con SKU explícito: "${providedExplicitSku}"`)
-            console.log(`   Se omite búsqueda masiva en variaciones para evitar demoras; se intentará localizar por nombre con el código proporcionado.`)
+            session.currentProduct = null
+            session.productVariations = null
+            productStockData = null
+            console.log(`[WooCommerce] 🔄 Contexto limpiado porque producto no encontrado`)
+            
+            // Intentar buscar por nombre como último recurso
+            console.log(`   Intentando buscar por nombre con el código proporcionado...`)
             try {
               const allProducts = await wordpressService.getAllProducts()
               const normalizedSku = normalizeCode(providedExplicitSku)
@@ -1350,6 +1512,15 @@ export async function processMessageWithAI(userId, message) {
                 context.productStockData = productStockData
                 session.currentProduct = productsWithCode[0] // Guardar para futuras referencias
                 console.log(`[WooCommerce] ✅ Producto encontrado por código en nombre/SKU: ${productStockData.name} (SKU real: ${productStockData.sku || 'N/A'})`)
+              } else if (productsWithCode.length === 0) {
+                // No se encontró en ninguna búsqueda - retornar mensaje amigable
+                console.log(`[WooCommerce] ⚠️ No se encontró producto con SKU "${providedExplicitSku}" en ninguna búsqueda`)
+                return createResponse(
+                  `No encontré un producto con el SKU "${providedExplicitSku}". ¿Podrías confirmarme el SKU correcto o el nombre completo del producto? 😊`,
+                  session.state,
+                  null,
+                  cart
+                )
               } else if (productsWithCode.length > 1) {
                 productSearchResults = productsWithCode.slice(0, 10) // limitar para no saturar respuestas
                 context.productSearchResults = productSearchResults
@@ -1380,7 +1551,12 @@ export async function processMessageWithAI(userId, message) {
             console.log(`[WooCommerce] ✅ Producto encontrado por ID explícito: ${productById.name || 'N/A'} (ID: ${productById.id || 'N/A'})`)
             console.log(`   Stock: ${productById.stock_quantity !== null ? productById.stock_quantity : 'N/A'}, Precio: ${productById.price ? '$' + productById.price : 'N/A'}`)
           } else {
+            // CRÍTICO: Producto NO encontrado por ID - limpiar contexto
             console.log(`[WooCommerce] ❌ No se encontró producto con ID explícito: "${providedExplicitId}"`)
+            session.currentProduct = null
+            session.productVariations = null
+            productStockData = null
+            console.log(`[WooCommerce] 🔄 Contexto limpiado porque producto no encontrado por ID`)
           }
         } catch (error) {
           console.error(`[WooCommerce] ❌ Error buscando por ID explícito "${providedExplicitId}":`, error.message)
@@ -1440,6 +1616,8 @@ export async function processMessageWithAI(userId, message) {
                     const variations = await wordpressService.getProductVariations(productStockData.id)
                     if (variations && variations.length > 0) {
                       context.productVariations = variations
+                      // CRÍTICO: Guardar también en sesión para que persistan entre mensajes
+                      session.productVariations = variations
                       console.log(`[WooCommerce] ✅ ${variations.length} variaciones encontradas para "${productStockData.name}"`)
                     }
                   } catch (error) {
@@ -1597,6 +1775,8 @@ export async function processMessageWithAI(userId, message) {
                           const variations = await wordpressService.getProductVariations(productStockData.id)
                           if (variations && variations.length > 0) {
                             context.productVariations = variations
+                            // CRÍTICO: Guardar también en sesión para que persistan entre mensajes
+                            session.productVariations = variations
                             console.log(`[WooCommerce] ✅ ${variations.length} variaciones encontradas para "${productStockData.name}"`)
                           }
                         } catch (error) {
@@ -1819,26 +1999,211 @@ export async function processMessageWithAI(userId, message) {
     }
   }
   
-  // Si es VARIANTE, validar que la variante específica existe
-  if (queryType === 'VARIANTE' && analisisOpenAI?.atributo && analisisOpenAI?.valorAtributo) {
+  // Si es VARIANTE, manejar consultas sobre variantes (con o sin valorAtributo específico)
+  // Ejemplos: "tienes en mas colores?" (sin valorAtributo) o "tienes en rojo?" (con valorAtributo)
+  if (queryType === 'VARIANTE' && analisisOpenAI?.atributo) {
     console.log(`[WooCommerce] 🔍 Validando variante: atributo="${analisisOpenAI?.atributo || 'N/A'}", valor="${analisisOpenAI?.valorAtributo || 'N/A'}"`)
     
+    // CRÍTICO: Validación MUY TEMPRANA - Si no hay producto en contexto NI en analisisOpenAI, retornar inmediatamente
+    // Esto previene que el código continúe y genere errores genéricos
+    const tieneProductoEnContexto = session.currentProduct || context.currentProduct || productStockData
+    const tieneSkuOTermino = analisisOpenAI?.sku || analisisOpenAI?.terminoProducto
+    
+    if (!tieneProductoEnContexto && !tieneSkuOTermino) {
+      console.log(`[WooCommerce] ⚠️ VARIANTE sin producto ni SKU/término - retornando mensaje amigable inmediatamente`)
+      
+      // CRÍTICO: Detectar si es palabra simple sin contexto (ej: "color", "colores", "talla")
+      // Estas palabras solas deben limpiar cualquier contexto residual y pedir producto
+      const palabrasSimples = ['color', 'colores', 'talla', 'tallas', 'tamaño', 'tamaños', 'variacion', 'variaciones']
+      const esPalabraSimple = palabrasSimples.includes(message.toLowerCase().trim())
+      
+      if (esPalabraSimple) {
+        // Limpiar cualquier contexto residual que pueda existir
+        session.currentProduct = null
+        session.productVariations = null
+        console.log(`[WooCommerce] 🔄 Palabra simple detectada sin contexto - contexto limpiado`)
+      }
+      
+      const atributoNombre = analisisOpenAI.atributo === 'color' ? 'colores' : 
+                             analisisOpenAI.atributo === 'talla' ? 'tallas' : 
+                             analisisOpenAI.atributo === 'tamaño' ? 'tamaños' : 
+                             `${analisisOpenAI.atributo}s`
+      return createResponse(
+        `Para poder mostrarte los ${atributoNombre} disponibles, necesito que me indiques el nombre completo o el SKU del producto. ¿Me lo puedes confirmar? 😊`,
+        session.state,
+        null,
+        cart
+      )
+    }
+    
     try {
-      // Si no tenemos el producto aún, buscarlo
-      if (!productStockData && analisisOpenAI) {
-        const skuToSearch = analisisOpenAI.sku || analisisOpenAI.terminoProducto
-        if (skuToSearch) {
-          productStockData = await wordpressService.getProductBySku(skuToSearch)
-          if (!productStockData) {
-            // Intentar por término
-            const termino = analisisOpenAI.terminoProducto || extractProductTerm(message)
-            if (termino) {
-              const searchResults = await wordpressService.searchProductsInWordPress(termino, 5)
-              if (searchResults && searchResults.length > 0) {
-                productStockData = searchResults[0]
+      // CRÍTICO: Validar atributo ANTES de usar cualquier producto del contexto
+      // Si hay producto en contexto, verificar que tenga el atributo solicitado
+      const productoContexto = session.currentProduct || context.currentProduct || productStockData
+      
+      if (productoContexto && analisisOpenAI?.atributo) {
+        // CRÍTICO: Validar que el producto en contexto tenga el atributo solicitado Y que tenga variaciones con ese atributo
+        // Si el producto no tiene el atributo (ej: B17 no tiene "talla", solo tiene "color"),
+        // limpiar contexto y retornar mensaje amigable inmediatamente
+        const atributoSolicitado = (analisisOpenAI.atributo || '').toLowerCase().trim()
+        let tieneAtributo = false
+        let tieneVariacionesConAtributo = false
+        
+        // Mapeo de atributos comunes (talla/tamaño son equivalentes)
+        const atributosEquivalentes = {
+          'talla': ['talla', 'tamaño', 'size', 'pa_talla', 'pa_tamaño'],
+          'tamaño': ['talla', 'tamaño', 'size', 'pa_talla', 'pa_tamaño'],
+          'color': ['color', 'colour', 'pa_color']
+        }
+        
+        const atributosParaBuscar = atributosEquivalentes[atributoSolicitado] || [atributoSolicitado]
+        
+        // Verificar en atributos del producto
+        if (productoContexto.attributes && Array.isArray(productoContexto.attributes)) {
+          tieneAtributo = productoContexto.attributes.some(attr => {
+            const attrName = (attr.name || '').toLowerCase().trim()
+            const attrNameSinPa = attrName.replace(/^pa_/, '')
+            // Verificar si coincide con alguno de los atributos equivalentes
+            return atributosParaBuscar.some(attrBuscado => 
+              attrName === attrBuscado || 
+              attrNameSinPa === attrBuscado ||
+              attrName.includes(attrBuscado) || 
+              attrBuscado.includes(attrNameSinPa)
+            )
+          })
+        }
+        
+        // CRÍTICO: Si el atributo existe, verificar que realmente haya variaciones con ese atributo
+        // No basta con que el atributo exista, debe haber variaciones que lo usen
+        if (tieneAtributo) {
+          // Verificar en variaciones de sesión primero (más rápido)
+          if (session.productVariations && Array.isArray(session.productVariations)) {
+            tieneVariacionesConAtributo = session.productVariations.some(variation => {
+              if (variation.attributes && Array.isArray(variation.attributes)) {
+                return variation.attributes.some(attr => {
+                  const attrName = (attr.name || '').toLowerCase().trim()
+                  const attrNameSinPa = attrName.replace(/^pa_/, '')
+                  return atributosParaBuscar.some(attrBuscado => 
+                    attrName === attrBuscado || 
+                    attrNameSinPa === attrBuscado ||
+                    attrName.includes(attrBuscado)
+                  )
+                })
+              }
+              return false
+            })
+          }
+          
+          // Si no hay variaciones en sesión pero el producto es variable, cargar variaciones para verificar
+          if (!tieneVariacionesConAtributo && productoContexto.type === 'variable' && productoContexto.id) {
+            try {
+              const variations = await wordpressService.getProductVariations(productoContexto.id)
+              if (variations && variations.length > 0) {
+                tieneVariacionesConAtributo = variations.some(variation => {
+                  if (variation.attributes && Array.isArray(variation.attributes)) {
+                    return variation.attributes.some(attr => {
+                      const attrName = (attr.name || '').toLowerCase().trim()
+                      const attrNameSinPa = attrName.replace(/^pa_/, '')
+                      return atributosParaBuscar.some(attrBuscado => 
+                        attrName === attrBuscado || 
+                        attrNameSinPa === attrBuscado ||
+                        attrName.includes(attrBuscado)
+                      )
+                    })
+                  }
+                  return false
+                })
+              }
+            } catch (error) {
+              console.error(`[WooCommerce] ⚠️ Error verificando variaciones: ${error.message}`)
+            }
+          }
+        }
+        
+        // Si no tiene el atributo O no tiene variaciones con ese atributo, limpiar contexto
+        if (!tieneAtributo || !tieneVariacionesConAtributo) {
+          // El producto en contexto no tiene el atributo solicitado o no tiene variaciones con ese atributo
+          // Limpiar contexto y retornar mensaje amigable inmediatamente
+          const razon = !tieneAtributo ? 'no tiene el atributo' : 'no tiene variaciones con ese atributo'
+          console.log(`[WooCommerce] ⚠️ Producto en contexto "${productoContexto.name || 'N/A'}" ${razon} "${analisisOpenAI.atributo}" - limpiando contexto y pidiendo producto`)
+          session.currentProduct = null
+          session.productVariations = null
+          context.currentProduct = null
+          context.productVariations = null
+          productStockData = null
+          
+          const atributoNombre = analisisOpenAI.atributo === 'color' ? 'colores' : 
+                                 analisisOpenAI.atributo === 'talla' ? 'tallas' : 
+                                 analisisOpenAI.atributo === 'tamaño' ? 'tamaños' : 
+                                 `${analisisOpenAI.atributo}s`
+          return createResponse(
+            `Para poder mostrarte los ${atributoNombre} disponibles, necesito que me indiques el nombre completo o el SKU del producto. ¿Me lo puedes confirmar? 😊`,
+            session.state,
+            null,
+            cart
+          )
+        } else {
+          // El producto tiene el atributo Y tiene variaciones - usar este producto
+          productStockData = productoContexto
+          console.log(`[WooCommerce] ✅ Producto en contexto tiene atributo "${analisisOpenAI.atributo}" con variaciones - usando producto`)
+        }
+      }
+      
+      // CRÍTICO: Si no tenemos el producto aún (y no se validó arriba), primero usar el del contexto, luego buscar
+      if (!productStockData) {
+        // Primero intentar usar producto del contexto (para preguntas de seguimiento)
+        if (session.currentProduct || context.currentProduct) {
+          const productoContexto = session.currentProduct || context.currentProduct
+          productStockData = productoContexto
+          console.log(`[WooCommerce] ✅ Usando producto del contexto para variante: ${productStockData.name || 'N/A'}`)
+        } else if (analisisOpenAI) {
+          // Si no hay producto en contexto, buscar por SKU o término
+          const skuToSearch = analisisOpenAI.sku || analisisOpenAI.terminoProducto
+          if (skuToSearch) {
+            productStockData = await wordpressService.getProductBySku(skuToSearch)
+            if (!productStockData) {
+              // Intentar por término
+              const termino = analisisOpenAI.terminoProducto || extractProductTerm(message)
+              if (termino) {
+                const searchResults = await wordpressService.searchProductsInWordPress(termino, 5)
+                if (searchResults && searchResults.length > 0) {
+                  productStockData = searchResults[0]
+                }
               }
             }
           }
+        }
+      }
+      
+      // CRÍTICO: Validación temprana - Si después de buscar no tenemos producto, retornar mensaje amigable
+      if (!productStockData) {
+        console.log(`[WooCommerce] ⚠️ No hay producto en contexto para consultar variaciones`)
+        const atributoNombre = analisisOpenAI.atributo === 'color' ? 'colores' : 
+                               analisisOpenAI.atributo === 'talla' ? 'tallas' : 
+                               analisisOpenAI.atributo === 'tamaño' ? 'tamaños' : 
+                               `${analisisOpenAI.atributo}s`
+        return createResponse(
+          `Para poder mostrarte los ${atributoNombre} disponibles, necesito que me indiques el nombre completo o el SKU del producto. ¿Me lo puedes confirmar? 😊`,
+          session.state,
+          null,
+          cart
+        )
+      }
+      
+      // CRÍTICO: Si el producto es una variación (tiene parent_id), obtener el producto padre para listar variaciones
+      if (productStockData && productStockData.parent_id) {
+        console.log(`[WooCommerce] 🔄 Producto en contexto es una variación (parent_id: ${productStockData.parent_id}), obteniendo producto padre...`)
+        try {
+          const parentProduct = await wordpressService.getProductById(productStockData.parent_id)
+          if (parentProduct) {
+            productStockData = parentProduct
+            console.log(`[WooCommerce] ✅ Producto padre obtenido: ${parentProduct.name || 'N/A'} (ID: ${parentProduct.id})`)
+          } else {
+            console.log(`[WooCommerce] ⚠️ No se pudo obtener producto padre, usando variación encontrada`)
+          }
+        } catch (error) {
+          console.error(`[WooCommerce] ⚠️ Error obteniendo producto padre: ${error.message}`)
+          // Continuar con la variación si falla obtener el padre
         }
       }
       
@@ -1846,20 +2211,29 @@ export async function processMessageWithAI(userId, message) {
         context.productStockData = productStockData
         session.currentProduct = productStockData
         
-        // Verificar si es producto variable
-        // Cargar variaciones si es variable y se pregunta por variantes (con o sin valorAtributo)
+        // CRÍTICO: Verificar si es producto variable y cargar variaciones SIEMPRE cuando se pregunta por variantes
+        // Esto aplica tanto para consultas con valorAtributo específico como sin él (listar todas)
         if (productStockData.type === 'variable' && productStockData.id && analisisOpenAI?.atributo) {
-          // Cargar variaciones si no están cargadas
+          // Cargar variaciones si no están cargadas (necesario para listar variantes disponibles)
           if (!context.productVariations) {
-            console.log(`[WooCommerce] 🔄 Cargando variaciones para producto variable...`)
-            try {
-              const variations = await wordpressService.getProductVariations(productStockData.id)
-              if (variations && variations.length > 0) {
-                context.productVariations = variations
-                console.log(`[WooCommerce] ✅ ${variations.length} variaciones cargadas`)
+            // Primero intentar usar variaciones de sesión si están disponibles
+            if (session.productVariations) {
+              context.productVariations = session.productVariations
+              console.log(`[WooCommerce] 🔄 Usando variaciones de sesión: ${session.productVariations.length} variaciones`)
+            } else {
+              // Si no hay en sesión, cargar desde WooCommerce
+              console.log(`[WooCommerce] 🔄 Cargando variaciones para producto variable...`)
+              try {
+                const variations = await wordpressService.getProductVariations(productStockData.id)
+                if (variations && variations.length > 0) {
+                  context.productVariations = variations
+                  // Guardar también en sesión para futuras referencias
+                  session.productVariations = variations
+                  console.log(`[WooCommerce] ✅ ${variations.length} variaciones cargadas`)
+                }
+              } catch (error) {
+                console.error(`[WooCommerce] ⚠️ Error cargando variaciones: ${error.message}`)
               }
-            } catch (error) {
-              console.error(`[WooCommerce] ⚠️ Error cargando variaciones: ${error.message}`)
             }
           }
           
@@ -1899,6 +2273,8 @@ export async function processMessageWithAI(userId, message) {
             // El atributo existe, ahora consultar variaciones para validar
             const variations = await wordpressService.getProductVariations(productStockData.id)
             context.productVariations = variations
+            // CRÍTICO: Guardar también en sesión para que persistan entre mensajes
+            session.productVariations = variations
             
             // Buscar variación que coincida con el atributo y valor solicitados
             const varianteEncontrada = variations.find(variation => {
@@ -1942,15 +2318,23 @@ export async function processMessageWithAI(userId, message) {
             
             // Las variaciones ya deberían estar cargadas arriba, pero verificar
             if (!context.productVariations && productStockData.id) {
-              console.log(`[WooCommerce] 🔄 Cargando variaciones para listar ${atributoNormalizado}s...`)
-              try {
-                const variations = await wordpressService.getProductVariations(productStockData.id)
-                if (variations && variations.length > 0) {
-                  context.productVariations = variations
-                  console.log(`[WooCommerce] ✅ ${variations.length} variaciones cargadas`)
+              // Primero intentar usar variaciones de sesión si están disponibles
+              if (session.productVariations) {
+                context.productVariations = session.productVariations
+                console.log(`[WooCommerce] 🔄 Usando variaciones de sesión: ${session.productVariations.length} variaciones`)
+              } else {
+                console.log(`[WooCommerce] 🔄 Cargando variaciones para listar ${atributoNormalizado}s...`)
+                try {
+                  const variations = await wordpressService.getProductVariations(productStockData.id)
+                  if (variations && variations.length > 0) {
+                    context.productVariations = variations
+                    // CRÍTICO: Guardar también en sesión para que persistan entre mensajes
+                    session.productVariations = variations
+                    console.log(`[WooCommerce] ✅ ${variations.length} variaciones cargadas`)
+                  }
+                } catch (error) {
+                  console.error(`[WooCommerce] ⚠️ Error cargando variaciones: ${error.message}`)
                 }
-              } catch (error) {
-                console.error(`[WooCommerce] ⚠️ Error cargando variaciones: ${error.message}`)
               }
             }
             
@@ -2008,6 +2392,24 @@ export async function processMessageWithAI(userId, message) {
     } catch (error) {
       console.error(`[WooCommerce] ❌ Error validando variante:`, error.message)
       context.varianteValidada = false
+      
+      // CRÍTICO: Si hay error y no hay producto válido, limpiar contexto y retornar mensaje amigable
+      // Esto previene errores genéricos cuando hay problemas procesando variantes
+      const productoValido = productStockData && productStockData.id && productStockData.name
+      if (!productoValido) {
+        session.currentProduct = null
+        session.productVariations = null
+        const atributoNombre = analisisOpenAI?.atributo === 'color' ? 'colores' : 
+                               analisisOpenAI?.atributo === 'talla' ? 'tallas' : 
+                               analisisOpenAI?.atributo === 'tamaño' ? 'tamaños' : 
+                               analisisOpenAI?.atributo ? `${analisisOpenAI.atributo}s` : 'variaciones'
+        return createResponse(
+          `Para poder mostrarte los ${atributoNombre} disponibles, necesito que me indiques el nombre completo o el SKU del producto. ¿Me lo puedes confirmar? 😊`,
+          session.state,
+          null,
+          cart
+        )
+      }
     }
   }
   
@@ -2016,18 +2418,25 @@ export async function processMessageWithAI(userId, message) {
     console.log(`[WooCommerce] 🔍 Consulta de características`)
     
     try {
-      // Si no tenemos el producto aún, buscarlo
+      // CRÍTICO: Si no tenemos el producto aún, primero usar el del contexto, luego buscar
       if (!productStockData) {
-        const skuToSearch = analisisOpenAI?.sku || analisisOpenAI?.terminoProducto
-        if (skuToSearch) {
-          productStockData = await wordpressService.getProductBySku(skuToSearch)
-          if (!productStockData) {
-            // Intentar por término
-            const termino = analisisOpenAI?.terminoProducto || extractProductTerm(message)
-            if (termino) {
-              const searchResults = await wordpressService.searchProductsInWordPress(termino, 5)
-              if (searchResults && searchResults.length > 0) {
-                productStockData = searchResults[0]
+        // Primero intentar usar producto del contexto (para preguntas de seguimiento)
+        if (session.currentProduct || context.currentProduct) {
+          productStockData = session.currentProduct || context.currentProduct
+          console.log(`[WooCommerce] ✅ Usando producto del contexto para características: ${productStockData.name || 'N/A'}`)
+        } else {
+          // Si no hay producto en contexto, buscar por SKU o término
+          const skuToSearch = analisisOpenAI?.sku || analisisOpenAI?.terminoProducto
+          if (skuToSearch) {
+            productStockData = await wordpressService.getProductBySku(skuToSearch)
+            if (!productStockData) {
+              // Intentar por término
+              const termino = analisisOpenAI?.terminoProducto || extractProductTerm(message)
+              if (termino) {
+                const searchResults = await wordpressService.searchProductsInWordPress(termino, 5)
+                if (searchResults && searchResults.length > 0) {
+                  productStockData = searchResults[0]
+                }
               }
             }
           }
@@ -2109,8 +2518,9 @@ Responde de forma apropiada según la consulta del cliente. Usa tu criterio para
       // Consulta sobre variante específica (color, tamaño, etc.)
       // CASO 1: Listar variantes disponibles (cuando se pregunta "qué colores tiene" sin especificar color)
       if (context.variantesDisponibles && context.variantesDisponibles.valores && context.variantesDisponibles.valores.length > 0) {
-        // Validar que el producto sea REAL
-        if (!validarProductoReal(productStockData)) {
+        // Validar que el producto sea REAL (tiene id y name)
+        const productoValido = productStockData && productStockData.id && productStockData.name
+        if (!productoValido) {
           textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
 
 SITUACIÓN:
@@ -2130,10 +2540,12 @@ Informa al cliente de forma empática que no se encontró el producto.
         } else {
           // Producto REAL - construir respuesta con datos REALES
           let stockInfo = ''
-          if (validarDatoNumerico(productStockData.stock_quantity)) {
-            const stockQty = parseInt(productStockData.stock_quantity)
-            stockInfo = stockQty > 0 
-              ? `${stockQty} unidad${stockQty > 1 ? 'es' : ''} disponible${stockQty > 1 ? 's' : ''}`
+          // Validar stock_quantity (debe ser número válido)
+          const stockQty = productStockData.stock_quantity !== null && productStockData.stock_quantity !== undefined && !isNaN(parseInt(productStockData.stock_quantity))
+          if (stockQty) {
+            const stockQtyNum = parseInt(productStockData.stock_quantity)
+            stockInfo = stockQtyNum > 0 
+              ? `${stockQtyNum} unidad${stockQtyNum > 1 ? 'es' : ''} disponible${stockQtyNum > 1 ? 's' : ''}`
               : 'Stock agotado (0 unidades)'
           } else if (productStockData.stock_status === 'instock') {
             stockInfo = 'disponible en stock'
@@ -2141,7 +2553,9 @@ Informa al cliente de forma empática que no se encontró el producto.
             stockInfo = 'N/A'
           }
           
-          const priceInfo = validarDatoNumerico(productStockData.price) 
+          // Validar price (debe ser número válido)
+          const priceNum = productStockData.price !== null && productStockData.price !== undefined && !isNaN(parseFloat(productStockData.price))
+          const priceInfo = priceNum
             ? `$${parseFloat(productStockData.price).toLocaleString('es-CL')}` 
             : 'N/A'
           
@@ -2219,11 +2633,35 @@ INSTRUCCIONES OBLIGATORIAS:
 - NO inventes información que no esté arriba`
         
       } else if (context.varianteValidada === false) {
-        // Variante no existe
+        // Variante no existe o no se encontraron variantes
         const atributo = analisisOpenAI?.atributo || 'atributo'
-        const valorAtributo = analisisOpenAI?.valorAtributo || 'valor'
+        const valorAtributo = analisisOpenAI?.valorAtributo
         const nombreProducto = productStockData?.name || analisisOpenAI?.terminoProducto || 'el producto'
         
+        // CRÍTICO: Si NO hay valorAtributo específico (solo se pregunta por el atributo, ej: "que colores tiene?"),
+        // y no se encontraron variantes, significa que el producto no tiene ese atributo o no tiene variaciones con ese atributo.
+        // En este caso, limpiar contexto y pedir el producto específico, NO decir "No disponible en [atributo] valor"
+        if (!valorAtributo || valorAtributo.trim() === '' || valorAtributo.toLowerCase() === 'valor' || valorAtributo.toLowerCase() === 'n/a') {
+          // No hay valorAtributo específico - limpiar contexto y pedir producto
+          session.currentProduct = null
+          session.productVariations = null
+          context.currentProduct = null
+          context.productVariations = null
+          
+          const atributoNombre = atributo === 'color' ? 'colores' : 
+                                 atributo === 'talla' ? 'tallas' : 
+                                 atributo === 'tamaño' ? 'tamaños' : 
+                                 `${atributo}s`
+          
+          return createResponse(
+            `Para poder mostrarte los ${atributoNombre} disponibles, necesito que me indiques el nombre completo o el SKU del producto. ¿Me lo puedes confirmar? 😊`,
+            session.state,
+            null,
+            cart
+          )
+        }
+        
+        // Si hay valorAtributo específico, entonces sí decir que no está disponible en esa variante
         textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
 
 SITUACIÓN:
@@ -2487,6 +2925,12 @@ INSTRUCCIONES OBLIGATORIAS:
         const hasExplicitReference = providedExplicitSku || providedExplicitId
         
         if (hasExplicitReference) {
+          // CRÍTICO: Limpiar contexto cuando producto no se encuentra con referencia explícita
+          // Esto previene que el contexto de productos anteriores persista incorrectamente
+          session.currentProduct = null
+          session.productVariations = null
+          console.log(`[WooCommerce] ⚠️ Producto no encontrado con referencia explícita - contexto limpiado`)
+          
           // El usuario proporcionó un SKU/ID explícito pero no se encontró el producto
           textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
 

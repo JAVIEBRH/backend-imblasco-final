@@ -344,7 +344,8 @@ export async function getProductBySku(sku) {
             description: product.description || '',
             short_description: product.short_description || '',
             attributes: product.attributes || [],
-            categories: product.categories || []
+            categories: product.categories || [],
+            parent_id: product.parent_id || product.parent || null // CRÍTICO: Capturar parent_id si es una variación
           }
         }
       } catch (error) {
@@ -357,6 +358,47 @@ export async function getProductBySku(sku) {
     return null
   } catch (error) {
     console.error('Error obteniendo producto por SKU:', error.message)
+    return null
+  }
+}
+
+/**
+ * Obtener producto por ID
+ * @param {number} productId - ID del producto
+ * @returns {Promise<Object|null>} Producto encontrado o null
+ */
+export async function getProductById(productId) {
+  try {
+    if (!productId || typeof productId !== 'number') {
+      return null
+    }
+
+    const product = await wcRequest(`products/${productId}`)
+    
+    if (!product || !product.id) {
+      return null
+    }
+
+    return {
+      id: product.id,
+      name: product.name || '',
+      sku: product.sku || '',
+      price: product.price ? parseFloat(product.price) : null,
+      stock_quantity: product.stock_quantity !== null && product.stock_quantity !== undefined 
+        ? parseInt(product.stock_quantity) 
+        : null,
+      stock_status: product.stock_status || 'unknown',
+      manage_stock: product.manage_stock || false,
+      available: product.stock_status === 'instock' || (product.stock_quantity && parseInt(product.stock_quantity) > 0),
+      type: product.type || 'simple',
+      description: product.description || '',
+      short_description: product.short_description || '',
+      attributes: product.attributes || [],
+      categories: product.categories || [],
+      parent_id: product.parent_id || product.parent || null
+    }
+  } catch (error) {
+    console.error(`[WooCommerce] Error obteniendo producto por ID ${productId}:`, error.message)
     return null
   }
 }
@@ -533,6 +575,7 @@ export default {
   getProductStock,
   searchProductsInWordPress,
   getProductBySku,
+  getProductById,
   getProductsSample,
   getAllProducts,
   getProductVariations,
