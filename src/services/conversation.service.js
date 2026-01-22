@@ -474,6 +474,11 @@ export async function initChat(userId) {
   const session = getSession(userId)
   const cart = await cartService.getCart(userId)
   
+  // CRÍTICO: Limpiar contexto de productos al inicializar chat
+  // Esto previene que el contexto persista entre sesiones
+  session.currentProduct = null
+  session.productVariations = null
+  
   // Verificar si hay stock cargado
   const stockLoaded = await stockService.isStockLoaded()
   if (!stockLoaded) {
@@ -1407,7 +1412,33 @@ export async function processMessageWithAI(userId, message) {
         // Solo usar contexto para consultas ambiguas o de seguimiento (sin SKU/ID explícito)
         productStockData = session.currentProduct || context.currentProduct || null
         
-        // Si hay producto en contexto, también cargarlo en context.productStockData y cargar variaciones de sesión
+        // CRÍTICO: Si hay un término de producto detectado, verificar que coincida con el producto en contexto
+        // Si el término NO coincide, limpiar contexto y buscar el nuevo producto
+        if (productStockData && terminoProductoParaBuscar) {
+          const terminoNormalizado = normalizeSearchText(terminoProductoParaBuscar)
+          const nombreProductoNormalizado = normalizeSearchText(productStockData.name || '')
+          const skuProductoNormalizado = normalizeSearchText(productStockData.sku || '')
+          
+          // Verificar si el término coincide con el nombre o SKU del producto en contexto
+          // Usar coincidencia bidireccional para capturar casos como "mochila" vs "mochilas" o "llavero" vs "llaveros"
+          const terminoCoincide = nombreProductoNormalizado.includes(terminoNormalizado) || 
+                                  terminoNormalizado.includes(nombreProductoNormalizado) ||
+                                  skuProductoNormalizado.includes(terminoNormalizado) ||
+                                  terminoNormalizado.includes(skuProductoNormalizado)
+          
+          if (!terminoCoincide) {
+            console.log(`[WooCommerce] ⚠️ Término "${terminoProductoParaBuscar}" NO coincide con producto en contexto "${productStockData.name}" - limpiando contexto y buscando nuevo producto`)
+            productStockData = null
+            session.currentProduct = null
+            session.productVariations = null
+            context.currentProduct = null
+            context.productVariations = null
+          } else {
+            console.log(`[WooCommerce] ✅ Término "${terminoProductoParaBuscar}" coincide con producto en contexto "${productStockData.name}"`)
+          }
+        }
+        
+        // Si hay producto en contexto (y coincide con el término), también cargarlo en context.productStockData y cargar variaciones de sesión
         if (productStockData) {
           context.productStockData = productStockData
           // CRÍTICO: Cargar variaciones de sesión si están disponibles (para preguntas de seguimiento)
