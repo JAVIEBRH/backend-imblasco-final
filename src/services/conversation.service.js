@@ -1433,8 +1433,34 @@ export async function processMessageWithAI(userId, message) {
             session.productVariations = null
             context.currentProduct = null
             context.productVariations = null
+            // CRÍTICO: También limpiar resultados de búsqueda anteriores para forzar nueva búsqueda
+            context.productSearchResults = null
+            productSearchResults = []
           } else {
             console.log(`[WooCommerce] ✅ Término "${terminoProductoParaBuscar}" coincide con producto en contexto "${productStockData.name}"`)
+          }
+        }
+        
+        // CRÍTICO: Si NO hay productStockData pero SÍ hay productSearchResults en contexto y un término diferente,
+        // verificar si el término coincide con alguno de los resultados. Si no coincide, limpiar resultados.
+        if (!productStockData && terminoProductoParaBuscar && context.productSearchResults && context.productSearchResults.length > 0) {
+          const terminoNormalizado = normalizeSearchText(terminoProductoParaBuscar)
+          // Verificar si el término coincide con alguno de los productos en los resultados
+          const algunoCoincide = context.productSearchResults.some(product => {
+            const nombreNormalizado = normalizeSearchText(product.name || '')
+            const skuNormalizado = normalizeSearchText(product.sku || '')
+            return nombreNormalizado.includes(terminoNormalizado) || 
+                   terminoNormalizado.includes(nombreNormalizado) ||
+                   skuNormalizado.includes(terminoNormalizado) ||
+                   terminoNormalizado.includes(skuNormalizado)
+          })
+          
+          if (!algunoCoincide) {
+            console.log(`[WooCommerce] ⚠️ Término "${terminoProductoParaBuscar}" NO coincide con resultados anteriores - limpiando resultados y buscando nuevo producto`)
+            context.productSearchResults = null
+            productSearchResults = []
+          } else {
+            console.log(`[WooCommerce] ✅ Término "${terminoProductoParaBuscar}" coincide con resultados anteriores`)
           }
         }
         
