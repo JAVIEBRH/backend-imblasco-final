@@ -6,6 +6,7 @@
 import { Router } from 'express'
 import * as conversationService from '../services/conversation.service.js'
 import { handleChat } from '../services/assistant.service.js'
+import { saveChatMessage } from '../services/chat-logger.service.js'
 
 export const chatRouter = Router()
 
@@ -38,7 +39,24 @@ chatRouter.post('/', async (req, res, next) => {
       })
     }
 
+    const threadId = session_id.trim()
+    console.log(`[CHAT] /api/chat guardando inbound threadId=${threadId}`)
+    await saveChatMessage({
+      threadId,
+      provider: 'webchat',
+      direction: 'inbound',
+      message: message.trim()
+    }).catch(err => console.error('[CHAT] Error guardando inbound:', err?.message || err))
+
     const response = await handleChat({ session_id, message })
+    const botText = response?.response ?? ''
+    await saveChatMessage({
+      threadId,
+      provider: 'webchat',
+      direction: 'outbound',
+      message: typeof botText === 'string' ? botText : String(botText)
+    }).catch(err => console.error('[CHAT] Error guardando outbound:', err?.message || err))
+
     res.json({
       success: true,
       ...response
@@ -237,12 +255,30 @@ chatRouter.post('/message', async (req, res, next) => {
       })
     }
 
+    const threadId = userId.trim()
+    console.log(`[CHAT] Guardando mensaje inbound threadId=${threadId}`)
+    await saveChatMessage({
+      threadId,
+      provider: 'webchat',
+      direction: 'inbound',
+      message: message.trim()
+    }).catch(err => console.error('[CHAT] Error guardando inbound:', err?.message || err))
+
     // Procesar mensaje con IA (el historial se obtiene de la sesión internamente)
     try {
       const response = await conversationService.processMessageWithAI(
-        userId.trim(),
+        threadId,
         message.trim()
       )
+
+      const botText = response?.botMessage ?? ''
+      console.log(`[CHAT] Guardando mensaje outbound threadId=${threadId}`)
+      await saveChatMessage({
+        threadId,
+        provider: 'webchat',
+        direction: 'outbound',
+        message: typeof botText === 'string' ? botText : String(botText)
+      }).catch(err => console.error('[CHAT] Error guardando outbound:', err?.message || err))
 
       res.json({
         success: true,
