@@ -7,7 +7,6 @@
  */
 
 import mongoose from 'mongoose';
-import mongoosePaginate from 'mongoose-paginate-v2';
 
 const { Schema } = mongoose;
 
@@ -142,8 +141,6 @@ conversationDashSchema.methods.rebuildSummary = function () {
 
     return this;
 };
-
-conversationDashSchema.plugin(mongoosePaginate);
 
 const ConversationDash = mongoose.models.ConversationDash || mongoose.model('ConversationDash', conversationDashSchema);
 
