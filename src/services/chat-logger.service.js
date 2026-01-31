@@ -102,7 +102,6 @@ export async function saveChatMessage({
                     unreadCount: 0
                 },
                 tags: [],
-                messages: [],
                 limits: {
                     maxMessages: 50
                 }
