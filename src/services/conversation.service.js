@@ -138,6 +138,25 @@ function containsWholeWord(text, word) {
 }
 
 /**
+ * Comprueba si un producto hace match exacto con el término de búsqueda (código/SKU).
+ * Match exacto: SKU normalizado igual al término, o nombre con la palabra completa del código.
+ * Ej: "K33" hace match con "Llavero Metal Madera K33" pero no con "Mochila SK33".
+ * @param {Object} product - Producto con .sku y .name
+ * @param {string} searchTerm - Término de búsqueda (ej. "K33")
+ * @returns {boolean}
+ */
+function productMatchesCodeExactly(product, searchTerm) {
+  if (!searchTerm || typeof searchTerm !== 'string' || !product) return false
+  const termNorm = normalizeCode(searchTerm)
+  if (!termNorm) return false
+  const skuNorm = normalizeCode(product.sku || '')
+  if (skuNorm && skuNorm === termNorm) return true
+  const name = product.name || ''
+  if (name && containsWholeWord(name, searchTerm)) return true
+  return false
+}
+
+/**
  * Convertir plural a singular en español (robusto y general)
  * @param {string} word - Palabra en plural
  * @returns {string} - Palabra en singular
@@ -576,12 +595,32 @@ function getHistoryContext(session, limit = 4) {
  */
 function formatStockInfo(product) {
   if (product.stock_quantity !== null && product.stock_quantity !== undefined) {
-    const stockQty = parseInt(product.stock_quantity)
+    const stockQty = parseStockQuantity(product.stock_quantity)
     return stockQty > 0 
       ? `${stockQty} unidad${stockQty !== 1 ? 'es' : ''}`
       : 'sin stock'
   }
   return product.stock_status === 'instock' ? 'disponible' : 'sin stock'
+}
+
+/** Devuelve true si el valor es un número válido (entero o decimal). Usado para stock y precio en prompts. */
+function validarDatoNumerico(val) {
+  if (val == null) return false
+  const n = Number(val)
+  return Number.isFinite(n)
+}
+
+/**
+ * Parsea cantidad de stock a entero para mostrar (siempre unidades enteras).
+ * Usa Number + Math.floor para que "5.5" → 5 de forma consistente; evita parseInt que solo trunca.
+ * @param {*} val - stock_quantity (string o número)
+ * @returns {number} Entero >= 0, o 0 si no es un número válido
+ */
+function parseStockQuantity(val) {
+  if (val == null) return 0
+  const n = Number(val)
+  if (!Number.isFinite(n) || n < 0) return 0
+  return Math.floor(n)
 }
 
 /** Límite de productos a enriquecer con stock de variaciones en listas (evita exceso de llamadas API) */
@@ -596,9 +635,10 @@ const MAX_PRODUCTS_TO_ENRICH_STOCK = 5
  */
 function getStockTextForListProduct(p, stockByProductId) {
   if (p.stock_quantity != null && p.stock_quantity !== undefined) {
-    const q = parseInt(p.stock_quantity, 10)
-    if (!Number.isFinite(q)) return p.stock_status === 'instock' ? 'consultar stock' : 'sin stock'
-    return q > 0 ? `${q} unidad${q !== 1 ? 'es' : ''}` : 'sin stock'
+    const q = parseStockQuantity(p.stock_quantity)
+    const isValidNumber = Number.isFinite(Number(p.stock_quantity)) && Number(p.stock_quantity) >= 0
+    if (isValidNumber) return q > 0 ? `${q} unidad${q !== 1 ? 'es' : ''}` : 'sin stock'
+    // Valor no numérico (ej. "N/A"): usar stock_status como fallback
   }
   const computed = stockByProductId[p.id]
   if (computed) {
@@ -626,10 +666,7 @@ async function enrichStockForListProducts(productListSlice) {
       toEnrich.map(p =>
         wordpressService.getProductVariations(p.id)
           .then(variations => {
-            const sum = (variations || []).reduce((acc, v) => {
-              const n = v.stock_quantity != null ? parseInt(v.stock_quantity, 10) : 0
-              return acc + (Number.isFinite(n) ? n : 0)
-            }, 0)
+            const sum = (variations || []).reduce((acc, v) => acc + parseStockQuantity(v.stock_quantity), 0)
             return { id: p.id, sum, error: false }
           })
           .catch(err => {
@@ -1434,17 +1471,23 @@ export async function processMessageWithAI(userId, message, options = {}) {
       }
     }
     // Si hay producto en contexto, comprobar si el usuario pide OTRO producto (SKU/término distinto)
-    // Si pide otro producto, no usar contexto y forzar búsqueda real para no responder con el producto anterior
-    if (productStockData && userAsksForDifferentProduct(message, productStockData, analisisOpenAI, providedExplicitSku, providedExplicitId)) {
+    // No aplicar cuando la IA ya clasificó como INFORMACION_GENERAL: así no desviamos "¿dirección?" a búsqueda de productos
+    if (queryType !== 'INFORMACION_GENERAL' && productStockData && userAsksForDifferentProduct(message, productStockData, analisisOpenAI, providedExplicitSku, providedExplicitId)) {
       console.log(`[WooCommerce] 🔄 Usuario pide producto distinto al del contexto (${productStockData.sku || productStockData.name}); se hará búsqueda real`)
       productStockData = null
       context.productStockData = null
       context.productVariations = null
+      session.currentProduct = null
+      session.productVariations = null
     }
     if (productStockData) {
       context.productStockData = productStockData
-      // CRÍTICO: Cargar variaciones de sesión si están disponibles (para preguntas de seguimiento)
-      if (session.productVariations && !context.productVariations) {
+      // CRÍTICO: Cargar variaciones de sesión solo si pertenecen al producto actual (evitar usar variaciones de otro producto)
+      // Si el producto en contexto es una variación, comparar por parent_id; si es padre, por id.
+      const productId = productStockData.parent_id || productStockData.id
+      const sessionVariationsBelongToProduct = session.productVariations && session.productVariations.length > 0 &&
+        (session.productVariations[0].parent_id === productId || session.productVariations[0].parent === productId)
+      if (sessionVariationsBelongToProduct && !context.productVariations) {
         context.productVariations = session.productVariations
         console.log(`[WooCommerce] 🔄 Cargadas ${session.productVariations.length} variaciones de sesión para producto del contexto`)
       }
@@ -1603,7 +1646,9 @@ export async function processMessageWithAI(userId, message, options = {}) {
             productStockData = lastShownAmb[0]
             context.productStockData = productStockData
             session.currentProduct = lastShownAmb[0]
+            session.productVariations = null
             session.lastShownResults = null
+            session.lastSearchTerm = null
             let atributoDetectado = null
             if (normalizedMessage.includes('color') || normalizedMessage.includes('colores')) atributoDetectado = 'color'
             else if (normalizedMessage.includes('talla') || normalizedMessage.includes('tallas')) atributoDetectado = 'talla'
@@ -1727,15 +1772,24 @@ export async function processMessageWithAI(userId, message, options = {}) {
           const words = message.trim().split(/\s+/).filter(Boolean)
           const firstWordIsSearchIntent = words.length >= 2 && ['busco', 'quiero', 'necesito', 'dame', 'muestra', 'muestrame', 'ver', 'encuentra', 'buscar', 'encontrar'].includes(words[0].toLowerCase())
           if (detectedSkus.length === 0 && isVeryShortMessage && !firstWordIsSearchIntent) {
-            // Patrón para SKUs que son solo letras (2-5 caracteres) o letras seguidas de números cortos
+            // Patrón para SKUs que son solo letras (2-5 caracteres)
             const lettersOnlySkuMatch = message.match(/\b([A-Za-z]{2,5})\b/i)
             if (lettersOnlySkuMatch) {
               const potentialSku = lettersOnlySkuMatch[1].trim()
-              // Verificar que no sea una palabra común (fortificación: incluir saludos y preguntas genéricas para no tratar "as", "Qu", "bueno", etc. como SKU)
-              const palabrasComunes = ['el', 'la', 'los', 'las', 'un', 'una', 'que', 'qué', 'qu', 'tienes', 'tienen', 'hay', 'tiene', 'as', 'bueno', 'buenos', 'dias', 'días', 'tardes', 'noches', 'buenas', 'venden', 'ayuda', 'algo', 'informacion', 'información', 'pueden', 'ayudar', 'hola', 'articulos', 'artículos', 'productos', 'catalogo', 'catálogo', 'busco', 'cojin', 'cojín', 'quiero', 'necesito', 'dame', 'muestra', 'muestrame', 'muéstrame', 'ver', 'encuentra', 'encontrar', 'buscando', 'necesitas', 'quieres']
-              if (!palabrasComunes.includes(potentialSku.toLowerCase())) {
-                detectedSkus.push(potentialSku)
-                console.log(`[WooCommerce] 🔍 SKU solo letras detectado (standalone): "${potentialSku}"`)
+              // Lista mínima solo para evitar llamar IA en casos obvios; el resto lo decide la IA (evita encasillar)
+              const blacklistMinima = ['el', 'la', 'los', 'las', 'un', 'una', 'que', 'qué', 'qu', 'hola', 'como', 'donde', 'dónde', 'tiene', 'tienen', 'hay']
+              if (blacklistMinima.includes(potentialSku.toLowerCase())) {
+                // No llamar IA para estas; nunca son SKU
+              } else {
+                try {
+                  const esCodigo = await conkavoAI.esCodigoProductoEnMensaje(message, potentialSku)
+                  if (esCodigo) {
+                    detectedSkus.push(potentialSku)
+                    console.log(`[WooCommerce] 🔍 SKU solo letras validado por IA: "${potentialSku}"`)
+                  }
+                } catch (err) {
+                  console.warn('[WooCommerce] ⚠️ Error validando candidato con IA, no se usa como SKU:', err?.message)
+                }
               }
             }
           }
@@ -1822,6 +1876,51 @@ export async function processMessageWithAI(userId, message, options = {}) {
       if (productStockData) {
         console.log(`[WooCommerce] ✅ Producto ya encontrado desde contexto, omitiendo búsquedas adicionales`)
       } else {
+        const currentSearchTermRaw = providedExplicitSku || terminoProductoParaBuscar || ''
+        const currentSearchTermNorm = normalizeCode(currentSearchTermRaw)
+        let resolvedFromLastShown = false
+        const lastShown = session.lastShownResults || []
+        const isShortMessage = message.trim().length <= 50 && message.trim().split(/\s+/).filter(Boolean).length <= 8
+
+        // Alta prioridad IA: mensaje corto + lista recién mostrada → interpretar si elige uno o repite búsqueda
+        if (!resolvedFromLastShown && lastShown.length > 0 && isShortMessage) {
+          try {
+            const tipoSeguimiento = await conkavoAI.detectarTipoSeguimiento(message, session.lastSearchTerm || '', lastShown.length)
+            if (tipoSeguimiento === 'ELIGE_UNO') {
+              const idx = await conkavoAI.interpretarSeguimientoCorto(message, lastShown)
+              if (idx >= 1 && idx <= lastShown.length) {
+                productStockData = lastShown[idx - 1]
+                context.productStockData = productStockData
+                session.currentProduct = lastShown[idx - 1]
+                session.productVariations = null
+                session.lastShownResults = null
+                session.lastSearchTerm = null
+                context.productSearchResults = []
+                resolvedFromLastShown = true
+                console.log(`[WooCommerce] ✅ IA: usuario eligió producto ${idx} de la lista - ${productStockData.name || 'N/A'}`)
+              }
+            }
+          } catch (err) {
+            console.warn('[WooCommerce] ⚠️ Error en detectarTipoSeguimiento/interpretarSeguimientoCorto:', err?.message)
+          }
+        }
+
+        // Repetición del mismo término: si el usuario repite el mismo código y ya mostramos una lista, usar match exacto si hay solo uno
+        if (!resolvedFromLastShown && currentSearchTermNorm && lastShown.length > 0 && session.lastSearchTerm && session.lastSearchTerm === currentSearchTermNorm) {
+          const exactInLast = lastShown.filter(p => productMatchesCodeExactly(p, currentSearchTermRaw))
+          if (exactInLast.length === 1) {
+            productStockData = exactInLast[0]
+            context.productStockData = productStockData
+            session.currentProduct = exactInLast[0]
+            session.productVariations = null
+            session.lastShownResults = null
+            session.lastSearchTerm = null
+            context.productSearchResults = []
+            resolvedFromLastShown = true
+            console.log(`[WooCommerce] ✅ Repetición del mismo término: un solo match exacto en lista ya mostrada - ${productStockData.name || 'N/A'}`)
+          }
+        }
+        if (!resolvedFromLastShown) {
       
       // Buscar por SKU primero
       if (providedExplicitSku) {
@@ -1934,9 +2033,22 @@ export async function processMessageWithAI(userId, message, options = {}) {
                   cart
                 )
               } else if (productsWithCode.length > 1) {
-                productSearchResults = productsWithCode.slice(0, 10)
-                context.productSearchResults = productSearchResults
-                console.log(`[WooCommerce] ✅ Encontrados ${productsWithCode.length} productos que contienen "${providedExplicitSku}" en nombre/SKU`)
+                const exactMatches = productsWithCode.filter(p => productMatchesCodeExactly(p, providedExplicitSku))
+                if (exactMatches.length === 1) {
+                  productStockData = exactMatches[0]
+                  context.productStockData = productStockData
+                  session.currentProduct = exactMatches[0]
+                  console.log(`[WooCommerce] ✅ Un solo match exacto para "${providedExplicitSku}": ${productStockData.name} (SKU: ${productStockData.sku || 'N/A'})`)
+                } else {
+                  const sorted = [...productsWithCode].sort((a, b) => {
+                    const aExact = productMatchesCodeExactly(a, providedExplicitSku) ? 1 : 0
+                    const bExact = productMatchesCodeExactly(b, providedExplicitSku) ? 1 : 0
+                    return bExact - aExact
+                  })
+                  productSearchResults = sorted.slice(0, 10)
+                  context.productSearchResults = productSearchResults
+                  console.log(`[WooCommerce] ✅ Encontrados ${productsWithCode.length} productos que contienen "${providedExplicitSku}" en nombre/SKU`)
+                }
               }
             } catch (error) {
               console.log(`[WooCommerce] ⚠️  Error buscando código en nombres/SKU: ${error.message}`)
@@ -2117,9 +2229,22 @@ export async function processMessageWithAI(userId, message, options = {}) {
                       session.currentProduct = productsWithCode[0]
                       console.log(`[WooCommerce] ✅ Producto encontrado por código en nombre/SKU: ${productStockData.name} (SKU real: ${productStockData.sku || 'N/A'})`)
                     } else if (productsWithCode.length > 1) {
-                      productSearchResults = productsWithCode.slice(0, 10)
-                      context.productSearchResults = productSearchResults
-                      console.log(`[WooCommerce] ✅ Encontrados ${productsWithCode.length} productos que contienen "${detectedSkuFromName}" en nombre/SKU`)
+                      const exactMatchesName = productsWithCode.filter(p => productMatchesCodeExactly(p, detectedSkuFromName))
+                      if (exactMatchesName.length === 1) {
+                        productStockData = exactMatchesName[0]
+                        context.productStockData = productStockData
+                        session.currentProduct = exactMatchesName[0]
+                        console.log(`[WooCommerce] ✅ Un solo match exacto para "${detectedSkuFromName}": ${productStockData.name} (SKU: ${productStockData.sku || 'N/A'})`)
+                      } else {
+                        const sortedName = [...productsWithCode].sort((a, b) => {
+                          const aExact = productMatchesCodeExactly(a, detectedSkuFromName) ? 1 : 0
+                          const bExact = productMatchesCodeExactly(b, detectedSkuFromName) ? 1 : 0
+                          return bExact - aExact
+                        })
+                        productSearchResults = sortedName.slice(0, 10)
+                        context.productSearchResults = productSearchResults
+                        console.log(`[WooCommerce] ✅ Encontrados ${productsWithCode.length} productos que contienen "${detectedSkuFromName}" en nombre/SKU`)
+                      }
                     } else {
                       console.log(`[WooCommerce] ❌ Tampoco se encontró "${detectedSkuFromName}" en nombres/SKU normalizados`)
                     }
@@ -2412,6 +2537,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
           console.log(`[WooCommerce] ⚠️ Término no suficientemente específico para fallback (término: "${fallbackTerm}"), se pedirá más información al cliente`)
         }
       }
+        } // cierra if (!resolvedFromLastShown)
       } // Cierra el else de "si ya tenemos producto del contexto, omitir búsquedas"
       
       // Verificar resultados finales (usar context para asegurar que tenemos los valores actualizados)
@@ -2421,13 +2547,30 @@ export async function processMessageWithAI(userId, message, options = {}) {
         productStockData = finalSearchResults[0]
         context.productStockData = productStockData
         session.currentProduct = finalSearchResults[0]
+        session.productVariations = null
         session.lastShownResults = null
+        session.lastSearchTerm = null
         console.log(`[WooCommerce] ✅ Un solo resultado: afirmando producto y fijando contexto - ${productStockData.name || 'N/A'}`)
       } else if (!productStockData && finalSearchResults.length > 0) {
-        session.lastShownResults = finalSearchResults
-        console.log(`[WooCommerce] 📋 Lista de ${finalSearchResults.length} resultados guardada para contexto de seguimiento`)
+        let listToStore = finalSearchResults
+        if (finalSearchResults.length > 1) {
+          try {
+            const suggestedIdx = await conkavoAI.desambiguarProductos(message, finalSearchResults)
+            if (suggestedIdx >= 1 && suggestedIdx <= finalSearchResults.length) {
+              listToStore = [finalSearchResults[suggestedIdx - 1], ...finalSearchResults.filter((_, i) => i !== suggestedIdx - 1)]
+              context.productSearchResults = listToStore.slice(0, 10)
+              console.log(`[WooCommerce] ✅ IA desambiguación: producto más probable puesto primero (${finalSearchResults[suggestedIdx - 1]?.name || 'N/A'})`)
+            }
+          } catch (err) {
+            console.warn('[WooCommerce] ⚠️ Error desambiguarProductos:', err?.message)
+          }
+        }
+        session.lastShownResults = listToStore
+        session.lastSearchTerm = normalizeCode(providedExplicitSku || context.terminoProductoParaBuscar || '')
+        console.log(`[WooCommerce] 📋 Lista de ${listToStore.length} resultados guardada para contexto de seguimiento`)
       } else if (productStockData) {
         session.lastShownResults = null
+        session.lastSearchTerm = null
       }
       if (!productStockData && !finalSearchResults.length) {
         console.log(`[WooCommerce] ⚠️ No se encontraron productos para: "${message}"`)
@@ -2461,7 +2604,9 @@ export async function processMessageWithAI(userId, message, options = {}) {
         productStockData = lastShown[0]
         context.productStockData = productStockData
         session.currentProduct = lastShown[0]
+        session.productVariations = null
         session.lastShownResults = null
+        session.lastSearchTerm = null
         console.log(`[WooCommerce] ✅ VARIANTE: usando único producto de la lista mostrada - ${productStockData.name || 'N/A'}`)
       } else {
         const atributoNombre = analisisOpenAI.atributo === 'color' ? 'colores' : 
@@ -2981,9 +3126,15 @@ Informa al cliente de forma empática que no se encontró el producto.
 - NO inventes productos o información`
         } else {
           // Producto REAL - construir respuesta con datos REALES
+          // Para producto variable usar suma de variaciones (coherente con PRODUCTOS); si no, stock_quantity del producto
           let stockInfo = ''
-          if (validarDatoNumerico(productStockData.stock_quantity)) {
-            const stockQty = parseInt(productStockData.stock_quantity)
+          if (context.productVariations && context.productVariations.length > 0 && productStockData.type === 'variable') {
+            const totalFromVars = context.productVariations.reduce((s, v) => s + parseStockQuantity(v.stock_quantity), 0)
+            stockInfo = totalFromVars > 0
+              ? `${totalFromVars} unidad${totalFromVars !== 1 ? 'es' : ''} disponible${totalFromVars !== 1 ? 's' : ''}`
+              : 'Stock agotado (0 unidades)'
+          } else if (validarDatoNumerico(productStockData.stock_quantity)) {
+            const stockQty = parseStockQuantity(productStockData.stock_quantity)
             stockInfo = stockQty > 0 
               ? `${stockQty} unidad${stockQty > 1 ? 'es' : ''} disponible${stockQty > 1 ? 's' : ''}`
               : 'Stock agotado (0 unidades)'
@@ -3037,9 +3188,10 @@ Presenta los ${atributo}s disponibles de forma clara y útil para el cliente.
       } else if (varianteProductoValido && context.varianteValidada === true) {
         // Variante existe y está validada
         let stockInfo = ''
+        const varianteQty = parseStockQuantity(productStockData.stock_quantity)
         if (productStockData.stock_quantity !== null && productStockData.stock_quantity !== undefined) {
-          if (productStockData.stock_quantity > 0) {
-            stockInfo = `${productStockData.stock_quantity} unidad${productStockData.stock_quantity > 1 ? 'es' : ''} disponible${productStockData.stock_quantity > 1 ? 's' : ''}`
+          if (varianteQty > 0) {
+            stockInfo = `${varianteQty} unidad${varianteQty > 1 ? 'es' : ''} disponible${varianteQty > 1 ? 's' : ''}`
           } else {
             stockInfo = 'Stock agotado (0 unidades)'
           }
@@ -3216,26 +3368,66 @@ INSTRUCCIONES OBLIGATORIAS:
     } else if (queryType === 'PRODUCTOS') {
       // Consulta de productos - el agente consultó WooCommerce
       if (productStockData) {
+        // CRÍTICO: Si el producto viene de lastShownResults (ej. "el primero") o de un solo resultado,
+        // las variaciones pueden no estar cargadas → stock incorrecto (padre en vez de suma variaciones).
+        if (productStockData.parent_id) {
+          const parentId = productStockData.parent_id
+          try {
+            const [parentProduct, variationsFromParent] = await Promise.all([
+              wordpressService.getProductById(parentId),
+              wordpressService.getProductVariations(parentId)
+            ])
+            if (parentProduct) {
+              productStockData = parentProduct
+              context.productStockData = productStockData
+              session.currentProduct = parentProduct
+              if (Array.isArray(variationsFromParent) && variationsFromParent.length > 0) {
+                context.productVariations = variationsFromParent
+                session.productVariations = variationsFromParent
+                console.log(`[WooCommerce] ✅ PRODUCTOS: producto era variación → padre + ${variationsFromParent.length} variaciones cargadas`)
+              }
+            }
+          } catch (e) {
+            console.warn('[WooCommerce] ⚠️ Error cargando padre/variaciones para variación:', e?.message)
+          }
+        } else if (productStockData.type === 'variable' && productStockData.id && (!context.productVariations || context.productVariations.length === 0)) {
+          try {
+            const variations = await wordpressService.getProductVariations(productStockData.id)
+            if (variations && variations.length > 0) {
+              context.productVariations = variations
+              session.productVariations = variations
+              console.log(`[WooCommerce] ✅ PRODUCTOS: variaciones cargadas para producto variable (${variations.length})`)
+            }
+          } catch (e) {
+            console.warn('[WooCommerce] ⚠️ Error cargando variaciones para producto variable:', e?.message)
+          }
+        }
+
         // Se encontró información del producto en WooCommerce
         // Construir información de stock más detallada
         // CRÍTICO: Siempre mostrar stock, incluso si es 0
+        const isVariation = productStockData.is_variation
         let stockInfo = ''
-        if (productStockData.stock_quantity !== null && productStockData.stock_quantity !== undefined) {
-          // Si stock_quantity está definido, usarlo siempre
-          if (productStockData.stock_quantity > 0) {
-            stockInfo = `${productStockData.stock_quantity} unidad${productStockData.stock_quantity > 1 ? 'es' : ''} disponible${productStockData.stock_quantity > 1 ? 's' : ''}`
+        // Si es producto variable con variaciones, el stock total es la SUMA de las variaciones (no el valor del padre)
+        if (context.productVariations && context.productVariations.length > 0 && !isVariation) {
+          const totalFromVariations = context.productVariations.reduce((sum, v) => sum + parseStockQuantity(v.stock_quantity), 0)
+          if (totalFromVariations > 0) {
+            stockInfo = `${totalFromVariations} unidad${totalFromVariations !== 1 ? 'es' : ''} disponible${totalFromVariations !== 1 ? 's' : ''}`
           } else {
-            // Stock es 0: mostrar como agotado
+            stockInfo = 'Stock agotado (0 unidades)'
+          }
+        } else if (productStockData.stock_quantity !== null && productStockData.stock_quantity !== undefined) {
+          const qty = parseStockQuantity(productStockData.stock_quantity)
+          if (qty > 0) {
+            stockInfo = `${qty} unidad${qty > 1 ? 'es' : ''} disponible${qty > 1 ? 's' : ''}`
+          } else {
             stockInfo = 'Stock agotado (0 unidades)'
           }
         } else if (productStockData.stock_status === 'instock') {
-          // Si no hay stock_quantity pero status es instock, mostrar disponible
           stockInfo = 'disponible en stock'
         } else if (productStockData.stock_status === 'outofstock') {
-          // Si status es outofstock, mostrar agotado
           stockInfo = 'Stock agotado (0 unidades)'
         } else {
-          // Si no hay información de stock, mostrar como sin stock
           stockInfo = 'Stock agotado (0 unidades)'
         }
         
@@ -3244,7 +3436,6 @@ INSTRUCCIONES OBLIGATORIAS:
           : 'Precio no disponible'
         
         // Si es una variación, incluir información del producto padre
-        const isVariation = productStockData.is_variation
         const parentInfo = isVariation && productStockData.parent_product 
           ? `\n- Producto padre: ${productStockData.parent_product.name}`
           : ''
@@ -3253,16 +3444,19 @@ INSTRUCCIONES OBLIGATORIAS:
         let variationsInfo = ''
         let allVariationsZeroStock = false
         if (context.productVariations && context.productVariations.length > 0 && !isVariation) {
+          // Coherente con vStock más abajo: variación "cero stock" solo si cantidad explícita 0 o (sin cantidad y outofstock)
           allVariationsZeroStock = context.productVariations.every(v => {
-            const qty = v.stock_quantity != null ? parseInt(v.stock_quantity, 10) : null
-            return qty === 0 || (qty == null && v.stock_status === 'outofstock')
+            const qty = parseStockQuantity(v.stock_quantity)
+            return (qty === 0 && (v.stock_quantity != null || v.stock_status === 'outofstock')) ||
+              (v.stock_quantity == null && v.stock_status === 'outofstock')
           })
-          if (allVariationsZeroStock && stockInfo === 'disponible en stock') {
+          if (allVariationsZeroStock && stockInfo !== 'Stock agotado (0 unidades)') {
             stockInfo = 'sin stock en variantes (0 unidades en cada variante por el momento)'
           }
           const variationsList = context.productVariations.slice(0, 5).map(v => {
-            const vStock = v.stock_quantity !== null && v.stock_quantity !== undefined
-              ? `${v.stock_quantity} unidad${v.stock_quantity !== 1 ? 'es' : ''}`
+            const vQty = parseStockQuantity(v.stock_quantity)
+            const vStock = v.stock_quantity != null
+              ? `${vQty} unidad${vQty !== 1 ? 'es' : ''}`
               : v.stock_status === 'instock' ? 'disponible' : 'sin stock'
             const vPrice = v.price ? `$${parseFloat(v.price).toLocaleString('es-CL')}` : 'Precio N/A'
             return `  - ${v.name}${v.sku ? ` (SKU: ${v.sku})` : ''} - ${vStock} - ${vPrice}`
@@ -3273,6 +3467,11 @@ INSTRUCCIONES OBLIGATORIAS:
             variationsInfo += '\n\n⚠️ REGLA: Todas las variantes tienen 0 unidades. NO digas "disponible en stock" para el producto; di claramente que no hay stock en las variantes por el momento.'
           }
         }
+        
+        // Número de unidades a citar en instrucciones (producto variable = suma variaciones; si no, stock_quantity del producto)
+        const stockNumberForPrompt = (context.productVariations && context.productVariations.length > 0 && !isVariation)
+          ? context.productVariations.reduce((s, v) => s + parseStockQuantity(v.stock_quantity), 0)
+          : (productStockData.stock_quantity != null ? parseStockQuantity(productStockData.stock_quantity) : null)
         
         // Determinar método de búsqueda y nivel de confianza
         const searchMethod = providedExplicitSku ? 'SKU exacto' : providedExplicitId ? 'ID exacto' : 'búsqueda por nombre'
@@ -3309,8 +3508,8 @@ Responde EXACTAMENTE en este formato, con saltos de línea entre cada elemento:
 3. Stock (en línea separada, OBLIGATORIO): "Stock: ${stockInfo}."
    ⚠️ CRÍTICO: SIEMPRE incluye el stock, incluso si el cliente solo pregunta por precio.
    ⚠️ Si el stock es 0, muestra "Stock agotado (0 unidades)".
-   ⚠️ Si stock_quantity existe y es mayor a 0, DEBES mostrar el número exacto: "Stock: ${productStockData.stock_quantity} unidades disponibles."
-   ⚠️ Si el cliente pregunta "¿Cuántas unidades hay?", DEBES responder con el número exacto: "${productStockData.stock_quantity !== null && productStockData.stock_quantity !== undefined ? productStockData.stock_quantity : 'N/A'} unidades disponibles."
+   ⚠️ Si hay stock, DEBES mostrar el número exacto de unidades: "Stock: ${stockInfo}."
+   ⚠️ Si el cliente pregunta "¿Cuántas unidades hay?", DEBES responder con el número exacto: "${stockNumberForPrompt != null ? stockNumberForPrompt : 'N/A'} unidades disponibles."
 4. Precio (en línea separada): "Precio: ${priceInfo}."
 ${variationsInfo ? '5. Variaciones (en líneas separadas): Menciona las variaciones disponibles con sus SKUs, stock y precios.' : ''}
 
@@ -3576,6 +3775,8 @@ Responde de forma breve (máximo 3-4 líneas), profesional y cercana, estilo Wha
     )
   }
 }
+
+export { getStockTextForListProduct, enrichStockForListProducts }
 
 export default {
   STATES,

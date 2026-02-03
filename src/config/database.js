@@ -5,17 +5,19 @@
 
 import mongoose from 'mongoose';
 
-// Configuración de conexión
+// Configuración de conexión (base final: dataimblasco)
 function getMongoUri() {
-  // Intentar obtener desde DATABASE_URL (Render/Heroku style)
+  if (process.env.MONGO_URI) {
+    return process.env.MONGO_URI;
+  }
   if (process.env.DATABASE_URL) {
     return process.env.DATABASE_URL;
   }
 
-  // O construir desde variables individuales
+  // O construir desde variables individuales (base final: dataimblasco)
   const host = process.env.DB_HOST || process.env.MONGO_HOST || 'localhost';
   const port = process.env.DB_PORT || process.env.MONGO_PORT || '27017';
-  const database = process.env.DB_NAME || process.env.MONGO_DB || 'imblasco_b2b';
+  const database = process.env.DB_NAME || process.env.MONGO_DB || 'dataimblasco';
   const user = process.env.DB_USER || process.env.MONGO_USER || '';
   const password = process.env.DB_PASSWORD || process.env.MONGO_PASSWORD || '';
 

@@ -615,6 +615,170 @@ Respuesta:`
 }
 
 /**
+ * Interpretar seguimiento corto: el usuario eligió uno de la lista recién mostrada ("el primero", "el rojo", "ese", etc.).
+ * @param {string} message - Mensaje corto del usuario
+ * @param {Array<{name: string, sku?: string}>} productList - Lista de productos mostrados (índice 1 = primer producto)
+ * @returns {Promise<number>} Índice 1-based del producto elegido, o 0 si no está claro
+ */
+export async function interpretarSeguimientoCorto(message, productList = []) {
+  if (!message || !Array.isArray(productList) || productList.length === 0) return 0
+  try {
+    const client = getOpenAIClient()
+    const listText = productList.slice(0, 10).map((p, i) => `${i + 1}. ${p.name || 'N/A'}${p.sku ? ` (SKU: ${p.sku})` : ''}`).join('\n')
+    const prompt = `El cliente acaba de ver esta lista de productos:
+${listText}
+
+El cliente respondió: "${message}"
+
+¿A cuál producto se refiere? Responde SOLO un número: el índice (1, 2, 3...) del producto elegido, o 0 si no está claro o no se refiere a ninguno de la lista.
+
+Ejemplos: "el primero" → 1, "el 1" → 1, "el rojo" → número de la opción que tiene rojo, "ese" → 1 si suele ser el primero, "el de 990" → índice del que cuesta 990, "ninguno" → 0.
+Respuesta:`
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'Responde solo con un número: índice 1-based del producto o 0.' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.1,
+      max_tokens: 10
+    })
+    const raw = (response.choices[0]?.message?.content || '0').trim()
+    const n = parseInt(raw.replace(/\D/g, ''), 10)
+    if (Number.isFinite(n) && n >= 1 && n <= productList.length) {
+      console.log(`[IA] ✅ Seguimiento corto: usuario eligió índice ${n} - ${productList[n - 1]?.name || 'N/A'}`)
+      return n
+    }
+    return 0
+  } catch (error) {
+    console.error(`[IA] ❌ Error interpretarSeguimientoCorto:`, error.message)
+    return 0
+  }
+}
+
+/**
+ * Desambiguar varios productos: cuál es más probable que busque el usuario.
+ * @param {string} message - Mensaje original del usuario
+ * @param {Array<{name: string, sku?: string}>} productList - Lista de productos encontrados
+ * @returns {Promise<number>} Índice 1-based del producto más probable, o 0 si ambiguo
+ */
+export async function desambiguarProductos(message, productList = []) {
+  if (!message || !Array.isArray(productList) || productList.length < 2) return 0
+  try {
+    const client = getOpenAIClient()
+    const listText = productList.slice(0, 10).map((p, i) => `${i + 1}. ${p.name || 'N/A'}${p.sku ? ` (SKU: ${p.sku})` : ''}`).join('\n')
+    const prompt = `El cliente buscó algo y encontramos estos productos:
+${listText}
+
+Mensaje del cliente: "${message}"
+
+¿Cuál es el producto que más probablemente busca? Responde SOLO un número: 1, 2, 3... (índice del más probable), o 0 si es ambiguo y no se puede decidir.
+
+Respuesta:`
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'Responde solo con un número: 1-based del producto más probable o 0.' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.1,
+      max_tokens: 10
+    })
+    const raw = (response.choices[0]?.message?.content || '0').trim()
+    const n = parseInt(raw.replace(/\D/g, ''), 10)
+    if (Number.isFinite(n) && n >= 1 && n <= productList.length) {
+      console.log(`[IA] ✅ Desambiguación: producto más probable índice ${n} - ${productList[n - 1]?.name || 'N/A'}`)
+      return n
+    }
+    return 0
+  } catch (error) {
+    console.error(`[IA] ❌ Error desambiguarProductos:`, error.message)
+    return 0
+  }
+}
+
+/**
+ * Validar si una palabra/candidato en el mensaje es un código de producto (SKU) que el usuario está pidiendo.
+ * Evita depender de una lista fija de "palabras comunes": la IA decide si el mensaje pregunta por un producto con ese código.
+ * @param {string} message - Mensaje completo del usuario
+ * @param {string} candidato - Palabra candidata (ej. "como", "K33", "gal")
+ * @returns {Promise<boolean>} true solo si el usuario está preguntando por un producto con ese código
+ */
+export async function esCodigoProductoEnMensaje(message, candidato) {
+  if (!message || !candidato || candidato.length < 2) return false
+  try {
+    const client = getOpenAIClient()
+    const prompt = `El cliente escribió: "${message}"
+
+En el mensaje aparece la palabra o código "${candidato}".
+
+¿El cliente está preguntando por un PRODUCTO o SKU con ese código/nombre? (ej. "tienen K33?", "busco el N35")
+NO es código de producto si: es pregunta genérica ("¿cómo comprar?", "¿cómo los contacto?"), saludo, adverbio, o palabra común ("qué", "donde", "como" en "cómo").
+
+Responde SOLO: SI o NO
+Respuesta:`
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'Responde solo SI o NO. SI solo si el cliente pide un producto con ese código.' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.1,
+      max_tokens: 10
+    })
+    const raw = (response.choices[0]?.message?.content || 'NO').trim()
+    const esCodigo = /^\s*s[ií]\s*$/i.test(raw) || /^\s*s[ií]\s*[\.\s]/.test(raw)
+    if (!esCodigo) console.log(`[IA] ✅ "${candidato}" no es código de producto en este mensaje`)
+    return esCodigo
+  } catch (error) {
+    console.error(`[IA] ❌ Error esCodigoProductoEnMensaje:`, error.message)
+    return false // En error, no tratar como SKU (evitar falsos positivos)
+  }
+}
+
+/**
+ * Detectar tipo de seguimiento: ¿repite la misma búsqueda, elige uno de la lista, o otra cosa?
+ * @param {string} message - Mensaje actual del usuario
+ * @param {string} lastSearchTerm - Término de la última búsqueda (normalizado)
+ * @param {number} lastShownCount - Cantidad de productos en la lista mostrada
+ * @returns {Promise<'REPITE_BUSQUEDA'|'ELIGE_UNO'|'OTRA_COSA'>}
+ */
+export async function detectarTipoSeguimiento(message, lastSearchTerm, lastShownCount) {
+  if (!message || lastShownCount < 1) return 'OTRA_COSA'
+  try {
+    const client = getOpenAIClient()
+    const prompt = `En la última respuesta mostramos ${lastShownCount} producto(s) al cliente (búsqueda: "${lastSearchTerm || 'N/A'}").
+
+El cliente ahora dice: "${message}"
+
+¿Qué está haciendo el cliente?
+- REPITE_BUSQUEDA: repite el mismo término o pide lo mismo otra vez (ej. "k33", "el K33", "busco el k33").
+- ELIGE_UNO: está eligiendo uno de la lista (ej. "el primero", "el 1", "ese", "el rojo", "el de 990", "el llavero").
+- OTRA_COSA: pregunta otra cosa, saludo, o no está claro.
+
+Responde SOLO una de estas tres palabras: REPITE_BUSQUEDA, ELIGE_UNO, OTRA_COSA
+Respuesta:`
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'Responde solo: REPITE_BUSQUEDA, ELIGE_UNO o OTRA_COSA.' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.1,
+      max_tokens: 20
+    })
+    const raw = (response.choices[0]?.message?.content || 'OTRA_COSA').trim().toUpperCase()
+    if (raw.includes('REPITE')) return 'REPITE_BUSQUEDA'
+    if (raw.includes('ELIGE')) return 'ELIGE_UNO'
+    console.log(`[IA] ✅ Tipo seguimiento: ${raw}`)
+    return 'OTRA_COSA'
+  } catch (error) {
+    console.error(`[IA] ❌ Error detectarTipoSeguimiento:`, error.message)
+    return 'OTRA_COSA'
+  }
+}
+
+/**
  * Redactar respuesta usando OpenAI Chat Completions API
  * 
  * @param {string} textoParaRedactar - Texto claro que describe qué debe redactar la IA
@@ -778,5 +942,9 @@ export default {
   redactarRespuestaStream,
   detectarSkuNumerico,
   analizarIntencionConsulta,
+  interpretarSeguimientoCorto,
+  desambiguarProductos,
+  detectarTipoSeguimiento,
+  esCodigoProductoEnMensaje,
   isConfigured
 }

@@ -380,6 +380,9 @@ chatRouter.post('/message/stream', async (req, res, next) => {
       }
     }
 
+    // Si el cliente cierra la conexión, dejar de enviar heartbeats
+    res.on('close', () => { clearHeartbeat() })
+
     // Timeout: evitar cuelgues indefinidos (90 s)
     const STREAM_TIMEOUT_MS = 90000
     res.setTimeout(STREAM_TIMEOUT_MS, () => {
