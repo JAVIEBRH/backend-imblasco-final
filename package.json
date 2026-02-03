@@ -24,7 +24,9 @@
     "stress-test-extreme": "node src/scripts/stress-test-chat-extreme.js",
     "stress-test-v2": "node src/scripts/stress-test-chat-extreme-v2.js",
     "monitor-test": "node src/scripts/monitor-test-progress.js",
-    "test-variations-no-context": "node src/scripts/test-variations-no-context.js"
+    "test-variations-no-context": "node src/scripts/test-variations-no-context.js",
+    "test-300-mejoras": "node src/scripts/test-300-mejoras-busqueda.js",
+    "test-stock-list": "node src/services/__tests__/conversation-stock-list.test.js"
   },
   "dependencies": {
     "axios": "^1.13.2",
