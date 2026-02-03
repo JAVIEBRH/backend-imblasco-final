@@ -270,6 +270,19 @@ function singularToPlural(word) {
 }
 
 /**
+ * Quitar saludo al inicio del mensaje para no usarlo como término de búsqueda ni mostrarlo en "relacionados con".
+ * Ej: "hola! tienes mochilas?" → "tienes mochilas?"
+ */
+function stripLeadingGreeting(msg) {
+  if (!msg || typeof msg !== 'string') return ''
+  const trimmed = msg.trim()
+  const withoutGreeting = trimmed
+    .replace(/^(hola|hi|hello|hey|buenos\s+d[ií]as|buenas\s+tardes|buenas\s+noches|buen\s+d[ií]a|saludos)[\s.!?¡¿,]*/gi, '')
+    .trim()
+  return withoutGreeting.length > 0 ? withoutGreeting : trimmed
+}
+
+/**
  * Extraer término del producto del mensaje (sin stop words, sin prefijos)
  * @param {string} message - Mensaje del usuario
  * @returns {string} - Término del producto extraído
@@ -304,9 +317,9 @@ function extractProductTerm(message) {
     return ''
   }
   
-  // Remover prefijos comunes y patrones específicos
+  // Remover prefijos comunes y patrones específicos (incl. "hola!" "hola?" para no tomar saludo como búsqueda)
   let cleaned = message
-    .replace(/^hola[.\s,]+/gi, '') // Remover "hola" al inicio
+    .replace(/^hola[\s.!?¡¿,]+/gi, '') // Remover "hola" + puntuación al inicio
     .replace(/^hay\s+stock\s+de[:\s]*/gi, '') // "HAY STOCK DE:"
     .replace(/^stock\s+de[:\s]*/gi, '') // "STOCK DE:"
     .replace(/cuanto\s+cuesta\s+(el|la|los|las)?/gi, '')
@@ -573,8 +586,6 @@ function formatStockInfo(product) {
 
 /** Límite de productos a enriquecer con stock de variaciones en listas (evita exceso de llamadas API) */
 const MAX_PRODUCTS_TO_ENRICH_STOCK = 5
-/** Límite de variaciones a mostrar en el prompt cuando el producto tiene muchas (criterio único con otros límites) */
-const MAX_VARIATIONS_TO_SHOW = 5
 
 /**
  * Obtener texto de stock para un producto en una lista, usando dato precalculado de variaciones si existe.
@@ -583,7 +594,7 @@ const MAX_VARIATIONS_TO_SHOW = 5
  * @param {Object} stockByProductId - Map id -> { sum, error } (suma de variaciones o error al cargar)
  * @returns {string} - "X unidades", "sin stock" o "consultar stock"
  */
-export function getStockTextForListProduct(p, stockByProductId) {
+function getStockTextForListProduct(p, stockByProductId) {
   if (p.stock_quantity != null && p.stock_quantity !== undefined) {
     const q = parseInt(p.stock_quantity, 10)
     if (!Number.isFinite(q)) return p.stock_status === 'instock' ? 'consultar stock' : 'sin stock'
@@ -604,7 +615,7 @@ export function getStockTextForListProduct(p, stockByProductId) {
  * @param {Array} productListSlice - Subarray de productos (ej. finalSearchResults.slice(0, MAX_PRODUCTS_TO_ENRICH_STOCK))
  * @returns {Promise<Object>} stockByProductId: { [id]: { sum, error } }
  */
-export async function enrichStockForListProducts(productListSlice) {
+async function enrichStockForListProducts(productListSlice) {
   const stockByProductId = {}
   const toEnrich = (productListSlice || [])
     .filter(p => p && (p.stock_quantity == null || p.stock_quantity === undefined) && p.id)
@@ -635,8 +646,7 @@ export async function enrichStockForListProducts(productListSlice) {
 }
 
 /**
- * Formatear lista de productos para prompts de IA.
- * NO usar para listas de resultados de búsqueda: esas deben usar enrichStockForListProducts + getStockTextForListProduct (criterio único).
+ * Formatear lista de productos para prompts de IA
  * @param {Array} products - Array de productos o items con productos
  * @param {Object} options - Opciones de formateo
  * @returns {string} - Lista de productos formateada
@@ -3250,7 +3260,7 @@ INSTRUCCIONES OBLIGATORIAS:
           if (allVariationsZeroStock && stockInfo === 'disponible en stock') {
             stockInfo = 'sin stock en variantes (0 unidades en cada variante por el momento)'
           }
-          const variationsList = context.productVariations.slice(0, MAX_VARIATIONS_TO_SHOW).map(v => {
+          const variationsList = context.productVariations.slice(0, 5).map(v => {
             const vStock = v.stock_quantity !== null && v.stock_quantity !== undefined
               ? `${v.stock_quantity} unidad${v.stock_quantity !== 1 ? 'es' : ''}`
               : v.stock_status === 'instock' ? 'disponible' : 'sin stock'
@@ -3258,7 +3268,7 @@ INSTRUCCIONES OBLIGATORIAS:
             return `  - ${v.name}${v.sku ? ` (SKU: ${v.sku})` : ''} - ${vStock} - ${vPrice}`
           }).join('\n')
           
-          variationsInfo = `\n\nVARIACIONES DISPONIBLES (${context.productVariations.length} total${context.productVariations.length > MAX_VARIATIONS_TO_SHOW ? `, mostrando ${MAX_VARIATIONS_TO_SHOW}` : ''}):\n${variationsList}`
+          variationsInfo = `\n\nVARIACIONES DISPONIBLES (${context.productVariations.length} total${context.productVariations.length > 5 ? ', mostrando 5' : ''}):\n${variationsList}`
           if (allVariationsZeroStock) {
             variationsInfo += '\n\n⚠️ REGLA: Todas las variantes tienen 0 unidades. NO digas "disponible en stock" para el producto; di claramente que no hay stock en las variantes por el momento.'
           }
@@ -3320,6 +3330,8 @@ IMPORTANTE:
       } else if ((productSearchResults && productSearchResults.length > 0) || (context.productSearchResults && context.productSearchResults.length > 0)) {
         // Usar context.productSearchResults si está disponible, sino usar la variable local
         const finalSearchResults = context.productSearchResults || productSearchResults || []
+        // Para no mostrar "hola! tienes X?" en "relacionados con": usar término buscado o mensaje sin saludo
+        const displayQuery = (context.terminoProductoParaBuscar && String(context.terminoProductoParaBuscar).trim()) || stripLeadingGreeting(message) || message
         
         // Si necesita confirmación (resultados del fallback genérico), pedir más información
         if (context.needsConfirmation) {
@@ -3363,7 +3375,7 @@ VALIDACIONES OBLIGATORIAS ANTES DE RESPONDER:
 4. NO inventes información adicional
 
 INSTRUCCIONES OBLIGATORIAS:
-- Menciona que encontraste ${finalSearchResults.length} producto(s) relacionado(s) con "${message}"
+- Menciona que encontraste ${finalSearchResults.length} producto(s) relacionado(s) con "${displayQuery}"
 - Lista los productos en el orden mostrado arriba (1, 2, 3...)
 - Para cada producto, incluye: nombre, SKU (si existe), precio (si existe) y stock
 - Pide al cliente que confirme cuál es el producto que busca (por número, SKU o nombre exacto)
@@ -3422,6 +3434,7 @@ INSTRUCCIONES OBLIGATORIAS:
 - NO inventes información`
             } else {
               // Criterio único: mismo límite, enriquecimiento y texto de stock que el otro bloque de listas
+              const displayQueryInner = (context.terminoProductoParaBuscar && String(context.terminoProductoParaBuscar).trim()) || stripLeadingGreeting(message) || message
               const sliceForList = finalSearchResults.slice(0, MAX_PRODUCTS_TO_ENRICH_STOCK)
               const stockByProductId = await enrichStockForListProducts(sliceForList)
               const productsList = sliceForList.map((p, index) => {
@@ -3438,7 +3451,7 @@ INSTRUCCIONES OBLIGATORIAS:
               
               textoParaIA = `Redacta una respuesta clara y profesional en español chileno informando al cliente sobre los productos encontrados.
 
-PRODUCTOS ENCONTRADOS relacionados con "${message}" (información real de WooCommerce, matching determinístico - alta confianza):
+PRODUCTOS ENCONTRADOS relacionados con "${displayQueryInner}" (información real de WooCommerce, matching determinístico - alta confianza):
 ${productsList}
 ${finalSearchResults.length > MAX_PRODUCTS_TO_ENRICH_STOCK ? `\n(Total: ${finalSearchResults.length} productos encontrados, mostrando los ${MAX_PRODUCTS_TO_ENRICH_STOCK} más relevantes)` : ''}
 
@@ -3451,7 +3464,7 @@ VALIDACIONES OBLIGATORIAS ANTES DE RESPONDER:
 4. NO inventes información adicional
 
 INSTRUCCIONES OBLIGATORIAS:
-- Menciona que encontraste ${finalSearchResults.length} producto(s) relacionado(s) con "${message}"
+- Menciona que encontraste ${finalSearchResults.length} producto(s) relacionado(s) con "${displayQueryInner}"
 - Lista los productos en el orden mostrado arriba (1, 2, 3...)
 - Para cada producto, incluye: nombre, SKU (si existe), stock y precio
 - Indica cuáles tienen stock disponible
