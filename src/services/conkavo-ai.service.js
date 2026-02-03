@@ -66,9 +66,10 @@ IMPORTANTE: El backend consulta WooCommerce en TIEMPO REAL automáticamente cuan
    - Si el stock es 0 o no disponible, dilo claramente
    - Toda mención de disponibilidad debe incluir descargo de confirmación si es relevante
 
-3) Si NO te proporcionan información del producto:
-   - Indica que no se encontró el producto
-   - Pide más detalles (nombre exacto, SKU) si es necesario
+3) Si NO te proporcionan información del producto (no hay resultados de búsqueda):
+   - Responde explícitamente: "No encontramos productos que coincidan con [término que buscó el cliente]."
+   - Sugiere dar SKU, nombre más específico o contactar a ventas.
+   - NUNCA listes ni inventes productos que no estén en el contexto proporcionado.
 
 PRINCIPIO CENTRAL
 "Rápido por defecto, exacto cuando importa".
@@ -139,10 +140,9 @@ No debes asumir información fuera de estos campos.
    - Solicita confirmación clara (SKU o nombre exacto)
    - No sugieras productos similares
 
-3. Si no se encuentra el producto:
-   - Indica que no hay coincidencias
-   - Pide información adicional
-   - No inventes resultados
+3. Si no se encuentra el producto (el backend te indica que no hay resultados):
+   - Responde: "No encontramos productos que coincidan con [término]. ¿Puedes darme el SKU o nombre más específico? También puedes contactar a ventas@imblasco.cl."
+   - NUNCA inventes ni listes productos que no te fueron proporcionados en el contexto.
 
 ❓ CUÁNDO PEDIR CONFIRMACIÓN
 - SOLO cuando el producto no está identificado de forma única
@@ -180,6 +180,10 @@ Precio: $15.990.
 Usuario: "¿Tienen bolígrafos?"
 Respuesta:
 "Necesito el nombre completo o el SKU del producto para darte precio y stock. ¿Me lo confirmas?"
+
+Usuario: "¿Tienen atomizadores de mano?" (y el backend indica que no hay resultados)
+Respuesta:
+"No encontramos productos que coincidan con 'atomizadores de mano'. ¿Puedes darme el SKU o nombre más específico? También puedes contactar a ventas@imblasco.cl."
 
 Usuario: "cuanto cuesta" (después de haber consultado un producto)
 Respuesta (si el producto ya está identificado):
@@ -301,7 +305,7 @@ export async function analizarIntencionConsulta(message, conversationHistory = [
     
     const historyContext = conversationHistory.length > 0
       ? `\n\nHistorial reciente:\n${conversationHistory.slice(-4).map(msg => 
-          `${msg.sender === 'user' ? 'Cliente' : 'Bot'}: ${(msg.message || msg.text || '').substring(0, 150)}`
+          `${msg.sender === 'user' ? 'Cliente' : 'Bot'}: ${(msg.message || msg.text || '').trim()}`
         ).join('\n')}`
       : ''
     
@@ -352,8 +356,13 @@ REGLAS ESTRICTAS (CRÍTICO - EVITAR FALSOS POSITIVOS):
    - "¿Me guardan uno?" → FALLBACK (tipoFallback: "RESERVA")
    - "¿Me hacen precio por volumen?" → FALLBACK (tipoFallback: "DESCUENTO")
 
-5. INFORMACION_GENERAL: Solo si pregunta explícitamente información de la empresa
-   - "horarios", "dirección", "contacto", "pagos", "garantía"
+5. INFORMACION_GENERAL: Solo si pregunta explícitamente información de la EMPRESA (no productos)
+   - Ubicación/dirección: "¿dónde están?", "¿dirección?", "¿ubicación?"
+   - Horarios: "¿horarios?", "¿a qué hora atienden?", "¿a qué hora abren?", "a que hora abren?", "¿atienden en almuerzo?"
+   - Contacto: "¿teléfono?", "¿email?", "¿cómo los contacto?"
+   - Despachos/envíos: "¿hacen envíos?", "¿despachan a regiones?"
+   - Empresa: "¿quiénes son?", "¿qué talleres recomiendan?"
+   - NUNCA marques INFORMACION_GENERAL si pregunta por un producto (nombre, SKU, precio, stock).
 
 6. AMBIGUA: Cuando el mensaje es genérico sin término específico
    - "tienen un producto" → AMBIGUA
@@ -391,6 +400,10 @@ Ejemplos:
 - "¿Me hacen precio por volumen?" → {"tipo":"FALLBACK","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":"DESCUENTO","necesitaMasInfo":false,"razon":"Consulta sobre descuento, no disponible"}
 - "necesito saber si tienen un producto" → {"tipo":"AMBIGUA","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":true,"razon":"Consulta genérica sin término de producto específico"}
 - "horarios de atención" → {"tipo":"INFORMACION_GENERAL","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta de información general"}
+- "¿dónde está ubicada la empresa?" → {"tipo":"INFORMACION_GENERAL","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta de ubicación/dirección"}
+- "¿cuáles son sus talleres recomendados?" → {"tipo":"INFORMACION_GENERAL","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta sobre empresa/servicios"}
+- "a que hora abren?" → {"tipo":"INFORMACION_GENERAL","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta de horarios"}
+- "¿dónde están ubicados?" → {"tipo":"INFORMACION_GENERAL","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta de ubicación"}
 
 Ejemplos CON CONTEXTO DE PRODUCTO:
 - Contexto: producto "Boligrafo Bamboo L39" (SKU: L39)
@@ -624,13 +637,16 @@ export async function redactarRespuesta(textoParaRedactar, conversationHistory =
       }
     ]
 
-    // Agregar TODO el historial de conversación de la sesión (desde que se abrió hasta ahora)
+    // Historial completo sin truncar: prioridad respuestas correctas (la IA necesita contexto completo)
     for (const msg of conversationHistory) {
       if (msg.sender === 'user' || msg.sender === 'bot') {
-        messages.push({
-          role: msg.sender === 'user' ? 'user' : 'assistant',
-          content: msg.message || msg.text || ''
-        })
+        const content = (msg.message || msg.text || '').trim()
+        if (content) {
+          messages.push({
+            role: msg.sender === 'user' ? 'user' : 'assistant',
+            content
+          })
+        }
       }
     }
 
@@ -645,7 +661,7 @@ export async function redactarRespuesta(textoParaRedactar, conversationHistory =
       model: 'gpt-4o-mini',
       messages: messages,
       temperature: 0.7,
-      max_tokens: 200
+      max_tokens: 400
     })
 
     const respuesta = response.choices[0]?.message?.content || 'No se recibió respuesta'
@@ -681,6 +697,55 @@ export async function redactarRespuesta(textoParaRedactar, conversationHistory =
 }
 
 /**
+ * Redactar respuesta en streaming (chunks en tiempo real)
+ * @param {string} textoParaRedactar - Texto para la IA
+ * @param {Array} conversationHistory - Historial (opcional)
+ * @param {function(string): void} onChunk - Callback por cada chunk de texto
+ * @returns {Promise<string>} Texto completo al finalizar
+ */
+export async function redactarRespuestaStream(textoParaRedactar, conversationHistory = [], onChunk) {
+  try {
+    const client = getOpenAIClient()
+    const messages = [
+      { role: 'system', content: SYSTEM_INSTRUCTIONS_CONKAVO }
+    ]
+    for (const msg of conversationHistory) {
+      if (msg.sender === 'user' || msg.sender === 'bot') {
+        const content = (msg.message || msg.text || '').trim()
+        if (content) {
+          messages.push({
+            role: msg.sender === 'user' ? 'user' : 'assistant',
+            content
+          })
+        }
+      }
+    }
+    messages.push({ role: 'user', content: textoParaRedactar })
+
+    const stream = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages,
+      temperature: 0.7,
+      max_tokens: 400,
+      stream: true
+    })
+
+    let fullText = ''
+    for await (const chunk of stream) {
+      const delta = chunk.choices?.[0]?.delta?.content
+      if (delta && typeof delta === 'string') {
+        fullText += delta
+        if (typeof onChunk === 'function') onChunk(delta)
+      }
+    }
+    return fullText
+  } catch (error) {
+    console.error('❌ Error en redactarRespuestaStream:', error?.message)
+    return '⚠️ Error al procesar tu mensaje. Por favor, intenta de nuevo.'
+  }
+}
+
+/**
  * Verificar si el servicio está configurado correctamente
  */
 export function isConfigured() {
@@ -710,6 +775,7 @@ export default {
   initializeOpenAI,
   getOpenAIClient,
   redactarRespuesta,
+  redactarRespuestaStream,
   detectarSkuNumerico,
   analizarIntencionConsulta,
   isConfigured

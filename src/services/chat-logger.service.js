@@ -13,6 +13,7 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
+import mongoose from 'mongoose';
 import ConversationDash from '../models/ConversationDash.js';
 
 /**
@@ -150,7 +151,8 @@ export async function saveChatMessage({
         thread.rebuildSummary();
         await thread.save();
 
-        console.log(`[CHAT] ✅ Mensaje guardado en conversationdash threadId=${threadId} direction=${direction}`);
+        const dbName = mongoose.connection?.db?.databaseName || '?';
+        console.log(`[CHAT] ✅ Mensaje guardado → DB: ${dbName}, colección: conversationdash, threadId=${threadId}, direction=${direction}`);
         return thread;
     } catch (error) {
         console.error('❌ Error al guardar mensaje de chat en MongoDB:', error.message);
