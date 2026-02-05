@@ -39,7 +39,7 @@ export const COMPANY_INFO = {
       condiciones: "La carga viaja a costo y riesgo del cliente",
       noTrabajan: "No se trabaja con Chilexpress, Correos de Chile ni Blue Express"
     },
-    santiago: "Retiro en casa matriz"
+    santiago: "Retiro en casa matriz. No se realizan envíos dentro de Santiago."
   },
   empresasTransporte: [
     "JAC", "Económico", "Express", "Chevalier", "Poblete", "Tur Bus", 
@@ -47,14 +47,26 @@ export const COMPANY_INFO = {
     "Mena", "Merco Sur", "Transcargo", "Tromen", "entre otras"
   ],
   comoRealizarPedido: {
-    paso1: "Solicitar cuenta para consultar precios y stock",
+    paso1: "Solicitar cuenta para consultar precios y stock. En nuestra página web, específicamente en el apartado solicitud de cuenta, podrá realizar el trámite pertinente",
     paso2: "Enviar datos de la empresa a ventas@imblasco.cl: RUT, razón social, giro, dirección y comuna",
-    paso3: "Clientes activos deben enviar cotización con modelos, tamaños y cantidades"
+    paso3: "Recibirás un email confirmando tu solicitud. Nuestro equipo revisará tu información (24-48 hrs). Te notificaremos por email cuando tu cuenta sea aprobada. Podrás acceder a precios mayoristas y realizar pedidos",
+    paso4: "Posterior a eso, podrás pedir tu cotización enviando un correo a la siguiente dirección: cesar.barahona.b@gmail.com",
+    paso5: "Clientes activos deben enviar cotización con modelos, tamaños y cantidades"
   },
   retiroPedidos: {
     pago: "Pago previo por transferencia bancaria",
     documentos: "Presentar RUT de compra o nota de venta",
     sinFacturar: "Si no está facturado, presentar comprobante de pago"
+  },
+  datosBancarios: {
+    rut: "76.274.594-1",
+    tipoCuenta: "Cuenta Corriente",
+    cuentas: [
+      { banco: "SANTANDER", numero: "06-699 114-8" },
+      { banco: "ESTADO", numero: "64 34 282" },
+      { banco: "ITAÚ", numero: "20-5518-518" },
+      { banco: "SCOTIABANK", numero: "975-730-255" }
+    ]
   },
   garantia: {
     productosNuevos: "6 meses",
@@ -124,11 +136,19 @@ CÓMO REALIZAR UN PEDIDO
 - ${info.comoRealizarPedido.paso1}
 - ${info.comoRealizarPedido.paso2}
 - ${info.comoRealizarPedido.paso3}
+- ${info.comoRealizarPedido.paso4}
+- ${info.comoRealizarPedido.paso5}
 
 RETIRO DE PEDIDOS
 - ${info.retiroPedidos.pago}
 - ${info.retiroPedidos.documentos}
 - ${info.retiroPedidos.sinFacturar}
+
+DATOS BANCARIOS PARA TRANSFERENCIA/DEPOSITO
+RUT: ${info.datosBancarios.rut}
+Tipo de cuenta: ${info.datosBancarios.tipoCuenta}
+Cuentas disponibles:
+${info.datosBancarios.cuentas.map(c => `- ${c.banco}: ${c.numero}`).join('\n')}
 
 GARANTÍA LEGAL
 - Productos nuevos: ${info.garantia.productosNuevos}
