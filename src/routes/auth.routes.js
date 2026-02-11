@@ -5,6 +5,7 @@
 
 import { Router } from 'express'
 import * as authService from '../services/auth.service.js'
+import * as wordpressAuthService from '../services/wordpress-auth.service.js'
 
 export const authRouter = Router()
 
@@ -93,6 +94,47 @@ authRouter.get('/users', async (req, res, next) => {
     res.json({
       users,
       count: users.length
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+/**
+ * POST /api/auth/validate
+ * Validar token para el chat (pensado para integración con WordPress).
+ * Body: { token?: string, userId?: string }
+ * Header: Authorization: Bearer <token> (alternativa a body.token)
+ * Respuesta: { valid: boolean, isLoggedIn: boolean }
+ * El frontend (WordPress) puede llamar a este endpoint para comprobar si el usuario
+ * tiene acceso a precios/stock antes de mostrar el chat o enviar mensajes.
+ */
+authRouter.post('/validate', async (req, res, next) => {
+  try {
+    const token = wordpressAuthService.getTokenFromRequest(req)
+    const userId = (req.body?.userId || '').toString().trim() || null
+    const result = await wordpressAuthService.validateTokenForChat({ token, userId })
+    res.json({
+      valid: result.isLoggedIn,
+      isLoggedIn: result.isLoggedIn
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+/**
+ * GET /api/auth/validate
+ * Igual que POST pero token por query: ?token=... o header Authorization.
+ */
+authRouter.get('/validate', async (req, res, next) => {
+  try {
+    const token = wordpressAuthService.getTokenFromRequest(req)
+    const userId = (req.query?.userId || '').toString().trim() || null
+    const result = await wordpressAuthService.validateTokenForChat({ token, userId })
+    res.json({
+      valid: result.isLoggedIn,
+      isLoggedIn: result.isLoggedIn
     })
   } catch (error) {
     next(error)

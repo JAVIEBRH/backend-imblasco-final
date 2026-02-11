@@ -27,9 +27,6 @@ import * as conkavoAI from './conkavo-ai.service.js'
 import * as wordpressService from './wordpress.service.js'
 import * as companyInfoService from './company-info.service.js'
 import * as productMatcher from './product-matcher.service.js'
-import { normalizeSearchText, normalizeCode, normalizeAttributeValue } from '../utils/normalization.js'
-import { getAttributeDisplayValue } from '../utils/attribute-value.js'
-import { logEvent } from '../utils/structured-logger.js'
 
 // Estados válidos
 export const STATES = {
@@ -80,12 +77,6 @@ const GENERIC_PHRASES_RAW = [
 ]
 const GENERIC_PHRASES_SET = new Set(GENERIC_PHRASES_RAW.map(normalizeForGenericGate))
 
-/** Términos genéricos que no deben usarse como término de búsqueda de producto (unificado, no mutable). */
-export const TERMINOS_GENERICOS = Object.freeze(['producto', 'productos', 'articulo', 'articulos', 'artículo', 'artículos', 'item', 'items', 'cosa', 'cosas', 'objeto', 'objetos'])
-
-/** Palabras que no deben disparar búsqueda de productos (transferencia/cuenta/depósito, etc.). */
-export const stopWords = Object.freeze(['cuenta', 'cuentas', 'transferir', 'transferencia', 'transferencias', 'depósito', 'deposito', 'depósitos', 'depositos', 'datos', 'pago', 'pagos', 'banco', 'bancaria', 'rut', 'factura', 'facturacion', 'pedido', 'pedidos', 'envio', 'envío', 'despacho', 'horario', 'horarios', 'almuerzo', 'direccion', 'dirección', 'telefono', 'teléfono', 'contacto', 'ayuda', 'info', 'informacion', 'información'])
-
 /**
  * Mapa abreviatura/sinónimo → palabra canónica que puede aparecer en nombre del producto.
  * Solo se usa en userAsksForDifferentProduct para "término en contexto". Ampliar según CANDIDATO_SINONIMO en logs.
@@ -97,6 +88,91 @@ const TERMINO_SINONIMOS_CONTEXTO = {
   bambu: 'bambu',
   libreta: 'libreta',
   cuaderno: 'cuaderno'
+}
+
+/**
+ * Normalizar texto para búsqueda (caracteres especiales, espacios, códigos)
+ * @param {string} text - Texto a normalizar
+ * @returns {string} - Texto normalizado
+ */
+function normalizeSearchText(text) {
+  if (!text || typeof text !== 'string') return ''
+  
+  return text
+    .toLowerCase()
+    .normalize('NFD')                       // Descomponer caracteres Unicode (á -> a + ´)
+    .replace(/[\u0300-\u036f]/g, '')       // Eliminar diacríticos (tildes, acentos)
+    // Normalizar caracteres especiales a espacios
+    .replace(/[-_.,;:()\[\]{}'"!?¡¿]/g, ' ')   // Guiones, puntos, paréntesis, comillas, signos → espacio
+    // Normalizar espacios múltiples a uno solo
+    .replace(/\s+/g, ' ')                  // Múltiples espacios → un solo espacio
+    .trim()
+}
+
+/**
+ * Normalizar códigos/SKU (N35 = N-35 = N 35 = N.35 = N3,5 = N3?)
+ * @param {string} code - Código/SKU a normalizar
+ * @returns {string} - Código normalizado
+ */
+function normalizeCode(code) {
+  if (!code || typeof code !== 'string') return ''
+  
+  return code
+    .toUpperCase()
+    .replace(/[?¿!¡.,;:()\[\]{}'"\s_-]/g, '')  // Eliminar signos de interrogación, exclamación, puntuación, espacios, guiones
+    .trim()
+}
+
+/**
+ * Resuelve si el usuario debe tratarse como logueado (acceso a precios, stock, cotización).
+ * - Pruebas/Producción actual: variable de entorno CHAT_AUTH_AS_LOGGED_IN (por defecto true = todos como logueados).
+ * - A futuro: la ruta validará token contra BD y pasará options.isLoggedIn; entonces se ignora el env.
+ * @param {Object} options - Opciones del mensaje (p. ej. { isLoggedIn: true } desde validación de token)
+ * @returns {boolean}
+ */
+function resolveIsLoggedIn(options = {}) {
+  if (typeof options.isLoggedIn === 'boolean') return options.isLoggedIn
+  const env = process.env.CHAT_AUTH_AS_LOGGED_IN
+  return env !== 'false' && env !== '0'
+}
+
+/**
+ * Detecta si el mensaje pregunta por cotización o cómo comprar (info sensible para no registrados).
+ */
+function isPreguntaCotizacionOComoComprar(msg) {
+  if (!msg || typeof msg !== 'string') return false
+  const m = msg.toLowerCase().trim()
+  return /\b(cotizaci[oó]n|cotizar|precio|precios|comprar|pedido|como\s+comprar|c[oó]mo\s+comprar|realizar\s+pedido|hacer\s+pedido)\b/.test(m)
+}
+
+/**
+ * Genera el prompt para la IA cuando el usuario no está logueado y pide productos/precios/stock.
+ * Redirige a solicitud de cuenta sin revelar información sensible.
+ */
+function getMessageNecesitasCuentaParaPreciosStock(message, paso1SolicitarCuenta) {
+  return `Redacta una respuesta breve y profesional en español chileno.
+El cliente preguntó por productos, precios o stock: "${message}"
+
+INSTRUCCIONES:
+- NO des precios, stock ni instrucciones de cotización. Esa información es solo para clientes con cuenta aprobada.
+- Indica que para acceder a precios, stock y cotizaciones debe tener una cuenta. Dirige al flujo de solicitud de cuenta.
+- Usa EXACTAMENTE esta información para solicitud de cuenta: ${paso1SolicitarCuenta}
+- Sé amable y profesional.`
+}
+
+/**
+ * Genera el prompt para la IA cuando el usuario no está logueado y pide cotización/cómo comprar.
+ * No revelar correo de cotización ni pasos con precios.
+ */
+function getMessageNecesitasCuentaParaCotizacion(message, paso1SolicitarCuenta) {
+  return `Redacta una respuesta breve y profesional en español chileno.
+El cliente preguntó por cotización o cómo comprar: "${message}"
+
+INSTRUCCIONES:
+- NO des el correo de cotización ni los pasos de compra con precios. Esa información es solo para clientes con cuenta aprobada.
+- Indica que para acceder a cotizaciones e instrucciones de compra debe tener una cuenta. Dirige al flujo de solicitud de cuenta.
+- Usa EXACTAMENTE esta información: ${paso1SolicitarCuenta}
+- Sé amable y profesional.`
 }
 
 /**
@@ -271,11 +347,58 @@ function singularToPlural(word) {
 function stripLeadingGreeting(msg) {
   if (!msg || typeof msg !== 'string') return ''
   const trimmed = msg.trim()
-  // Ampliar solo con variantes de saludo al inicio; no recortar nombre de producto ni SKU
   const withoutGreeting = trimmed
-    .replace(/^(hola|hi|hello|hey|buenos\s+d[ií]as|buenas\s+tardes|buenas\s+noches|buen\s+d[ií]a|buen\s+día|good\s+morning|good\s+afternoon|good\s+evening|saludos)[\s.!?¡¿,]*/gi, '')
+    .replace(/^(hola|hi|hello|hey|buenos\s+d[ií]as|buenas\s+tardes|buenas\s+noches|buen\s+d[ií]a|saludos)[\s.!?¡¿,]*/gi, '')
     .trim()
   return withoutGreeting.length > 0 ? withoutGreeting : trimmed
+}
+
+/** Detección temprana: pide hablar con una persona/ejecutivo (evitar tratarlo como búsqueda). */
+function isHumanoRequest(msg) {
+  if (!msg || typeof msg !== 'string') return false
+  const t = msg.trim().toLowerCase()
+  const patterns = [
+    /quiero\s+hablar\s+con\s+(una\s+persona|un\s+ejecutivo|alguien|un\s+humano)/i,
+    /hablar\s+con\s+una\s+persona/i,
+    /necesito\s+hablar\s+con\s+(un\s+ejecutivo|una\s+persona|alguien)/i,
+    /necesito\s+que\s+me\s+llame\s+(un\s+)?ejecutivo/i,
+    /(puedo|podr[ií]a)\s+hablar\s+con\s+(un\s+ejecutivo|una\s+persona|alguien)/i,
+    /atenci[oó]n\s+humana/i,
+    /que\s+me\s+llame\s+(alguien|un\s+ejecutivo)/i
+  ]
+  return patterns.some(p => p.test(t))
+}
+
+/** Detección temprana: queja o reclamo (evitar tratarlo como búsqueda). */
+function isReclamoRequest(msg) {
+  if (!msg || typeof msg !== 'string') return false
+  const t = msg.trim().toLowerCase()
+  const patterns = [
+    /\bqueja\b/i,
+    /\bquejas\b/i,
+    /una\s+queja/i,
+    /tengo\s+una\s+queja/i,
+    /tegno\s+una\s+queja/i,
+    /tengo\s+un\s+reclamo/i,
+    /quiero\s+reclamar/i,
+    /me\s+quejo\s+de/i,
+    /tengo\s+un\s+problema\s+con\s+(mi\s+pedido|el\s+pedido)/i
+  ]
+  return patterns.some(p => p.test(t))
+}
+
+/** Detección temprana: devolución de producto (responder con garantía, sin pedir datos ni contactaremos). */
+function isDevolucionRequest(msg) {
+  if (!msg || typeof msg !== 'string') return false
+  const t = msg.trim().toLowerCase()
+  const patterns = [
+    /quiero\s+devolver/i,
+    /necesito\s+devolver/i,
+    /devolver\s+(un\s+)?producto/i,
+    /devoluci[oó]n/i,
+    /hacer\s+una\s+devoluci[oó]n/i
+  ]
+  return patterns.some(p => p.test(t))
 }
 
 /**
@@ -284,6 +407,19 @@ function stripLeadingGreeting(msg) {
  * @returns {string} - Término del producto extraído
  */
 function extractProductTerm(message) {
+  // Lista completa de stop words (palabras a eliminar)
+  const stopWords = [
+    'hay', 'stock', 'del', 'de', 'producto', 'productos', 'product', 'products', 'tienes', 'tiene', 
+    'cuanto', 'cuánto', 'cuántas', 'cuántos', 'precio', 'precios', 'cuesta', 'vale', 
+    'que', 'unidades', 'disponible', 'disponibles', 'tienen', 'el', 'la', 'los', 'las', 
+    'hola', 'busco', 'buscando', 'llamado', 'llamada', 'nombre', 'articulo', 'articulos',
+    'artículo', 'artículos', 'un', 'una', 'estoy', 'en', 'con', 'por', 'para', 'sobre',
+    'desde', 'hasta', 'entre', 'durante', 'según', 'mediante', 'sin', 'bajo',
+    'tiene', 'tienen', 'hay', 'existe', 'existen', 'tengas', 'tengamos',
+    'necesito', 'necesita', 'necesitas', 'saber', 'si', 'quiero', 'quieres', 'quiere',
+    'podria', 'podrías', 'podría', 'puedo', 'puedes', 'puede', 'me', 'te', 'le'
+  ]
+  
   // Detectar consultas genéricas sin término de producto específico
   const genericPatterns = [
     /necesito\s+saber\s+si\s+tienen\s+(un|el|la|los|las)?\s*producto/i,
@@ -335,96 +471,6 @@ function extractProductTerm(message) {
   result = result.replace(/^(de|del|en|con|por|para)\s+/gi, '').trim()
   
   return result
-}
-
-/**
- * Detectar si la consulta es una recomendación obvia de productos.
- * @param {string} message - Mensaje del usuario
- * @returns {boolean}
- */
-function isObviousRecommendation(message) {
-  if (!message || typeof message !== 'string') return false
-  const text = message.toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .trim()
-
-  if (!text) return false
-
-  const exclusionPatterns = [
-    /taller(es)?\s+recomendad[oa]s?/i,
-    /empresa(s)?\s+recomendad[oa]s?/i,
-    /proveedor(es)?\s+recomendad[oa]s?/i,
-    /contact(ar|o|o\s+con)/i,
-    /como\s+comprar/i,
-    /horario(s)?/i,
-    /direccion|dirección/i
-  ]
-  if (exclusionPatterns.some(pattern => pattern.test(text))) {
-    return false
-  }
-
-  const recommendationPatterns = [
-    /que\s+me\s+recomiendan/i,
-    /que\s+me\s+recomiendas/i,
-    /recomiendame/i,
-    /recomiend[ao]s/i,
-    /no\s+se\s+que\s+comprar/i,
-    /no\s+se\s+que\s+elegir/i,
-    /busco\s+algo\s+para/i,
-    /necesito\s+una\s+recomendacion/i
-  ]
-
-  return recommendationPatterns.some(pattern => pattern.test(text))
-}
-
-/**
- * Extraer término o contexto para recomendaciones (ej: "para regalo" → "regalo").
- * @param {string} message - Mensaje del usuario
- * @returns {string}
- */
-function extractRecommendationTerm(message) {
-  if (!message || typeof message !== 'string') return ''
-  const raw = message
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-
-  let candidate = ''
-  const paraMatch = raw.match(/para\s+([a-z0-9\s-]{3,})/i)
-  if (paraMatch && paraMatch[1]) {
-    candidate = paraMatch[1]
-  }
-
-  if (!candidate) {
-    const keywordMatch = raw.match(/\b(regalo|empresa|oficina|evento|publicidad|promocion|campana|institucional|personal|deportivo|pesca|trofeo|premiacion)\b/i)
-    if (keywordMatch) candidate = keywordMatch[1]
-  }
-
-  if (!candidate) return ''
-
-  let cleaned = candidate
-    .replace(/recomiend[ao]s?/gi, '')
-    .replace(/que\s+me\s+recomiendan/gi, '')
-    .replace(/que\s+me\s+recomiendas/gi, '')
-    .replace(/no\s+se\s+que\s+(comprar|elegir)/gi, '')
-    .replace(/busco\s+algo/gi, '')
-    .replace(/algo/gi, '')
-    .replace(/productos?/gi, '')
-    .replace(/articulos?/gi, '')
-    .replace(/items?/gi, '')
-    .trim()
-
-  let normalized = normalizeSearchText(cleaned)
-  normalized = normalized
-    .split(/\s+/)
-    .filter(word => word.length > 1 && !stopWords.includes(word))
-    .map(word => pluralToSingular(word))
-    .join(' ')
-    .replace(/^(de|del|en|con|por|para)\s+/gi, '')
-    .trim()
-
-  return normalized
 }
 
 /**
@@ -515,7 +561,6 @@ function getSession(userId) {
       userId,
       state: STATES.IDLE,
       currentProduct: null,
-      currentVariation: null,
       history: []
     })
   }
@@ -597,8 +642,9 @@ function userAsksForDifferentProduct(message, contextProduct, analisisOpenAI, pr
   }
 
   // Término de búsqueda que no coincide con el producto en contexto → pedir búsqueda real
+  const terminosGenericos = ['producto', 'productos', 'articulo', 'articulos', 'artículo', 'artículos', 'item', 'items', 'cosa', 'cosas', 'objeto', 'objetos']
   const term = (analisisOpenAI?.terminoProducto || extractProductTerm(message)).trim().toLowerCase()
-  if (!term || TERMINOS_GENERICOS.includes(term)) return false
+  if (!term || terminosGenericos.includes(term)) return false
 
   const termNorm = normalizeSearchText(term)
   const combiContexto = `${contextNameNorm} ${contextSkuNorm}`.trim()
@@ -616,7 +662,7 @@ function userAsksForDifferentProduct(message, contextProduct, analisisOpenAI, pr
   }
   // Filosofía: si el mensaje contiene un término de producto explícito (ej. "taza", "gorros") que NO está en el contexto, no usar contexto
   const termFromMessage = extractProductTerm(message).trim().toLowerCase()
-  if (termFromMessage && !TERMINOS_GENERICOS.includes(termFromMessage)) {
+  if (termFromMessage && !terminosGenericos.includes(termFromMessage)) {
     const termNormMsg = normalizeSearchText(termFromMessage)
     const inContextFromMsg = combiContexto.length > 0 && (combiContexto.includes(termNormMsg) || termNormMsg.split(/\s+/).every(p => combiContexto.includes(p)))
     if (!inContextFromMsg) {
@@ -680,11 +726,6 @@ function parseStockQuantity(val) {
 /** Límite de productos a enriquecer con stock de variaciones en listas (evita exceso de llamadas API) */
 const MAX_PRODUCTS_TO_ENRICH_STOCK = 5
 
-/** Cache en memoria para recomendaciones genéricas (muestra popular) */
-const CACHE_TTL_MS = 30 * 60 * 1000 // 30 minutos
-let cachedPopularProducts = null
-let cacheTimestamp = null
-
 /**
  * Obtener texto de stock para un producto en una lista, usando dato precalculado de variaciones si existe.
  * Criterio único: si hay stock_quantity usarlo; si no, usar stockByProductId (suma variaciones o error).
@@ -742,22 +783,7 @@ async function enrichStockForListProducts(productListSlice) {
 }
 
 /**
- * Obtener productos populares con cache (evita llamadas frecuentes a WooCommerce).
- * @returns {Promise<Array>}
- */
-async function getCachedPopularProducts() {
-  const now = Date.now()
-  if (cachedPopularProducts && cacheTimestamp && (now - cacheTimestamp) < CACHE_TTL_MS) {
-    return cachedPopularProducts
-  }
-  cachedPopularProducts = await wordpressService.getProductsSample(10)
-  cacheTimestamp = now
-  return cachedPopularProducts
-}
-
-/**
- * Formatear lista de productos para prompts de IA.
- * No usar para listas de PRODUCTOS ENCONTRADOS; usar getStockTextForListProduct + enrichStockForListProducts.
+ * Formatear lista de productos para prompts de IA
  * @param {Array} products - Array de productos o items con productos
  * @param {Object} options - Opciones de formateo
  * @returns {string} - Lista de productos formateada
@@ -1080,7 +1106,6 @@ async function handleWaitingQuantityState(session, actionType, value, cart, user
     const updatedCart = await cartService.getCart(userId)
     
     session.currentProduct = null
-    session.currentVariation = null
     session.state = STATES.CONFIRMATION
     
     const cartItems = updatedCart.items || {}
@@ -1171,7 +1196,6 @@ async function handleFinishOrder(session, userId, cart) {
   // Resetear sesión
   session.state = STATES.FINISHED
   session.currentProduct = null
-  session.currentVariation = null
   
   // Formatear resumen
   const itemsSummary = items
@@ -1235,7 +1259,6 @@ async function handleCancelOrder(session, userId) {
   await cartService.clearCart(userId)
   session.state = STATES.IDLE
   session.currentProduct = null
-  session.currentVariation = null
   
   const message = '❌ Pedido cancelado. Carrito vaciado.\n\n¿Deseas iniciar uno nuevo?'
   addToHistory(session, 'bot', message)
@@ -1324,7 +1347,6 @@ export async function resetSession(userId) {
  * @returns {Promise<Object>} Respuesta con mensaje de IA
  */
 export async function processMessageWithAI(userId, message, options = {}) {
-  const processStart = Date.now()
   try {
     const session = getSession(userId)
     let cart = { items: {} } // Carrito vacío por defecto
@@ -1364,9 +1386,9 @@ export async function processMessageWithAI(userId, message, options = {}) {
       return createResponse(lunchResponse, session.state, null, cart)
     }
     
-    // El agente está autenticado con Consumer Key/Secret de WooCommerce
-    // Puede consultar stock sin necesidad de que el usuario final esté logueado
-    const isLoggedIn = true // El agente está autenticado
+    // Validación de acceso: precios, stock y cotización solo para usuarios con cuenta aprobada.
+    // Pruebas: CHAT_AUTH_AS_LOGGED_IN !== 'false' → todos como logueados. A futuro: options.isLoggedIn desde validación de token.
+    const isLoggedIn = resolveIsLoggedIn(options)
     const user = { email: 'cesar.barahona@conkavo.cl', role: 'agent' }
   
     // Construir contexto para el agente de IA
@@ -1376,8 +1398,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
       currentProduct: session.currentProduct,
       isLoggedIn: isLoggedIn,
       user: user,
-      companyInfo: companyInfoService.formatCompanyInfoForAgent(),
-      needsConfirmation: false
+      companyInfo: companyInfoService.formatCompanyInfoForAgent()
     }
     
     // ============================================
@@ -1444,117 +1465,112 @@ export async function processMessageWithAI(userId, message, options = {}) {
       }
     }
     
-    // Sin bypass por regex: la IA clasifica cuando no hay SKU/ID explícito (prioridad: respuestas correctas)
+    // Sin bypass por regex: la IA siempre clasifica cuando no hay SKU/ID explícito (prioridad: respuestas correctas)
     if (!providedExplicitSku && !providedExplicitId) {
-      if (isObviousRecommendation(message)) {
-        const terminoRec = extractRecommendationTerm(message)
-        queryType = 'RECOMENDACION'
+      const msgStr = (typeof message === 'string' ? message : '').trim()
+      if (isDevolucionRequest(msgStr)) {
+        queryType = 'DEVOLUCION'
+        console.log(`[WooCommerce] Detección temprana: DEVOLUCION`)
+      } else if (isHumanoRequest(msgStr)) {
+        queryType = 'DERIVACION_HUMANO'
+        console.log(`[WooCommerce] Detección temprana: DERIVACION_HUMANO`)
+      } else if (isReclamoRequest(msgStr)) {
+        queryType = 'RECLAMO'
+        console.log(`[WooCommerce] Detección temprana: RECLAMO`)
+      }
+      if (queryType !== 'DERIVACION_HUMANO' && queryType !== 'RECLAMO' && queryType !== 'DEVOLUCION') {
+      console.log(`[WooCommerce] 🤖 Consulta sin SKU/ID explícito → OpenAI analizará intención...`)
+      
+      try {
+        const recentHistory = session.history?.slice(-10) || []
+        const currentProductForAI = context.currentProduct || session.currentProduct || null
+        analisisOpenAI = await conkavoAI.analizarIntencionConsulta(message, recentHistory, currentProductForAI)
+        
+        // Validar que el análisis de OpenAI sea válido
+        if (!analisisOpenAI || typeof analisisOpenAI !== 'object') {
+          throw new Error('Análisis de OpenAI inválido: respuesta no es objeto')
+        }
+        
+        const tiposValidos = ['PRODUCTO', 'INFORMACION_GENERAL', 'AMBIGUA', 'VARIANTE', 'CARACTERISTICAS', 'FALLBACK', 'RECLAMO', 'DERIVACION_HUMANO', 'RECOMENDACION']
+        if (!tiposValidos.includes(analisisOpenAI.tipo)) {
+          console.error(`[WooCommerce] ⚠️ Tipo de consulta inválido de OpenAI: "${analisisOpenAI.tipo}"`)
+          analisisOpenAI.tipo = 'AMBIGUA' // Fallback conservador
+          analisisOpenAI.necesitaMasInfo = true
+        }
+        
+        // Mapear tipos de OpenAI a queryType interno
+        queryType = analisisOpenAI.tipo === 'PRODUCTO' ? 'PRODUCTOS' : 
+                   analisisOpenAI.tipo === 'INFORMACION_GENERAL' ? 'INFORMACION_GENERAL' : 
+                   analisisOpenAI.tipo === 'VARIANTE' ? 'VARIANTE' :
+                   analisisOpenAI.tipo === 'CARACTERISTICAS' ? 'CARACTERISTICAS' :
+                   analisisOpenAI.tipo === 'FALLBACK' ? 'FALLBACK' :
+                   analisisOpenAI.tipo === 'RECLAMO' ? 'RECLAMO' :
+                   analisisOpenAI.tipo === 'DERIVACION_HUMANO' ? 'DERIVACION_HUMANO' :
+                   analisisOpenAI.tipo === 'RECOMENDACION' ? 'RECOMENDACION' :
+                   'AMBIGUA'
+        
+        console.log(`[WooCommerce] 🤖 OpenAI decidió: tipo=${queryType}, término=${analisisOpenAI.terminoProducto || 'N/A'}, SKU=${analisisOpenAI.sku || 'N/A'}, ID=${analisisOpenAI.id || 'N/A'}, necesitaMásInfo=${analisisOpenAI.necesitaMasInfo}`)
+        
+        // No usar SKU/ID del contexto si el mensaje actual NO los menciona (evita "bamboo" → responder con Llavero anterior)
+        const msgNorm = (typeof message === 'string' ? message : '').trim().toLowerCase()
+        if (analisisOpenAI.sku && msgNorm.length > 0) {
+          const skuStr = String(analisisOpenAI.sku).trim()
+          if (!msgNorm.includes(skuStr.toLowerCase())) {
+            analisisOpenAI.sku = null
+            console.log(`[WooCommerce] ⚠️ SKU "${skuStr}" no está en el mensaje; usando solo término "${analisisOpenAI.terminoProducto || 'N/A'}" para búsqueda`)
+          }
+        }
+        if (analisisOpenAI.id && msgNorm.length > 0) {
+          const idStr = String(analisisOpenAI.id).trim()
+          if (!msgNorm.includes(idStr.toLowerCase())) {
+            analisisOpenAI.id = null
+            console.log(`[WooCommerce] ⚠️ ID "${idStr}" no está en el mensaje; ignorando`)
+          }
+        }
+        
+        // Si OpenAI detectó SKU/ID que el regex no detectó, usarlo (ya validado contra el mensaje)
+        if (analisisOpenAI.sku && !providedExplicitSku) {
+          providedExplicitSku = analisisOpenAI.sku
+          if (/[-.\s]/.test(String(analisisOpenAI.sku))) {
+            rawExplicitSku = analisisOpenAI.sku
+          }
+          console.log(`[WooCommerce] ✅ OpenAI detectó SKU: "${providedExplicitSku}"`)
+        }
+        if (analisisOpenAI.id && !providedExplicitId) {
+          providedExplicitId = analisisOpenAI.id
+          console.log(`[WooCommerce] ✅ OpenAI detectó ID: "${providedExplicitId}"`)
+        }
+        
+        // Guardar análisis en context para uso posterior
+        context.analisisOpenAI = analisisOpenAI
+        context.terminoProductoParaBuscar = analisisOpenAI.terminoProducto || null
+        
+      } catch (error) {
+        console.error(`[WooCommerce] ❌ Error crítico analizando con OpenAI:`, error.message)
+        // Fallback conservador: tratar como ambigua y pedir más información
+        queryType = 'AMBIGUA'
         analisisOpenAI = {
-          tipo: 'RECOMENDACION',
-          terminoProducto: terminoRec || null,
+          tipo: 'AMBIGUA',
+          terminoProducto: null,
           sku: null,
           id: null,
           atributo: null,
           valorAtributo: null,
           tipoFallback: null,
-          necesitaMasInfo: false,
-          razon: 'Detección temprana de recomendación'
+          necesitaMasInfo: true,
+          razon: 'Error al analizar, se requiere más información para evitar errores'
         }
         context.analisisOpenAI = analisisOpenAI
-        context.terminoProductoParaBuscar = terminoRec || null
-        console.log(`[WooCommerce] ⚡ Recomendación obvia detectada por regex → queryType=RECOMENDACION, término=${terminoRec || 'N/A'}`)
-      } else {
-        console.log(`[WooCommerce] 🤖 Consulta sin SKU/ID explícito → OpenAI analizará intención...`)
-        
-        try {
-          const recentHistory = session.history?.slice(-10) || []
-        const currentProductForAI = context.currentVariation || session.currentVariation || context.currentProduct || session.currentProduct || null
-          analisisOpenAI = await conkavoAI.analizarIntencionConsulta(message, recentHistory, currentProductForAI)
-          
-          // Validar que el análisis de OpenAI sea válido
-          if (!analisisOpenAI || typeof analisisOpenAI !== 'object') {
-            throw new Error('Análisis de OpenAI inválido: respuesta no es objeto')
-          }
-          
-          const tiposValidos = ['PRODUCTO', 'INFORMACION_GENERAL', 'AMBIGUA', 'VARIANTE', 'CARACTERISTICAS', 'FALLBACK', 'RECOMENDACION']
-          if (!tiposValidos.includes(analisisOpenAI.tipo)) {
-            console.error(`[WooCommerce] ⚠️ Tipo de consulta inválido de OpenAI: "${analisisOpenAI.tipo}"`)
-            analisisOpenAI.tipo = 'AMBIGUA' // Fallback conservador
-            analisisOpenAI.necesitaMasInfo = true
-          }
-          
-          // Mapear tipos de OpenAI a queryType interno
-          queryType = analisisOpenAI.tipo === 'PRODUCTO' ? 'PRODUCTOS' : 
-                     analisisOpenAI.tipo === 'RECOMENDACION' ? 'RECOMENDACION' :
-                     analisisOpenAI.tipo === 'INFORMACION_GENERAL' ? 'INFORMACION_GENERAL' : 
-                     analisisOpenAI.tipo === 'VARIANTE' ? 'VARIANTE' :
-                     analisisOpenAI.tipo === 'CARACTERISTICAS' ? 'CARACTERISTICAS' :
-                     analisisOpenAI.tipo === 'FALLBACK' ? 'FALLBACK' :
-                     'AMBIGUA'
-          
-          console.log(`[WooCommerce] 🤖 OpenAI decidió: tipo=${queryType}, término=${analisisOpenAI.terminoProducto || 'N/A'}, SKU=${analisisOpenAI.sku || 'N/A'}, ID=${analisisOpenAI.id || 'N/A'}, necesitaMásInfo=${analisisOpenAI.necesitaMasInfo}`)
-          
-          // No usar SKU/ID del contexto si el mensaje actual NO los menciona (evita "bamboo" → responder con Llavero anterior)
-          const msgNorm = (typeof message === 'string' ? message : '').trim().toLowerCase()
-          if (analisisOpenAI.sku && msgNorm.length > 0) {
-            const skuStr = String(analisisOpenAI.sku).trim()
-            if (!msgNorm.includes(skuStr.toLowerCase())) {
-              analisisOpenAI.sku = null
-              console.log(`[WooCommerce] ⚠️ SKU "${skuStr}" no está en el mensaje; usando solo término "${analisisOpenAI.terminoProducto || 'N/A'}" para búsqueda`)
-            }
-          }
-          if (analisisOpenAI.id && msgNorm.length > 0) {
-            const idStr = String(analisisOpenAI.id).trim()
-            if (!msgNorm.includes(idStr.toLowerCase())) {
-              analisisOpenAI.id = null
-              console.log(`[WooCommerce] ⚠️ ID "${idStr}" no está en el mensaje; ignorando`)
-            }
-          }
-          
-          // Si OpenAI detectó SKU/ID que el regex no detectó, usarlo (ya validado contra el mensaje)
-          if (analisisOpenAI.sku && !providedExplicitSku) {
-            providedExplicitSku = analisisOpenAI.sku
-            if (/[-.\s]/.test(String(analisisOpenAI.sku))) {
-              rawExplicitSku = analisisOpenAI.sku
-            }
-            console.log(`[WooCommerce] ✅ OpenAI detectó SKU: "${providedExplicitSku}"`)
-          }
-          if (analisisOpenAI.id && !providedExplicitId) {
-            providedExplicitId = analisisOpenAI.id
-            console.log(`[WooCommerce] ✅ OpenAI detectó ID: "${providedExplicitId}"`)
-          }
-          
-          // Guardar análisis en context para uso posterior
-          context.analisisOpenAI = analisisOpenAI
-          context.terminoProductoParaBuscar = analisisOpenAI.terminoProducto || null
-          
-        } catch (error) {
-          console.error(`[WooCommerce] ❌ Error crítico analizando con OpenAI:`, error.message)
-          // Fallback conservador: tratar como ambigua y pedir más información
-          queryType = 'AMBIGUA'
-          analisisOpenAI = {
-            tipo: 'AMBIGUA',
-            terminoProducto: null,
-            sku: null,
-            id: null,
-            atributo: null,
-            valorAtributo: null,
-            tipoFallback: null,
-            necesitaMasInfo: true,
-            razon: 'Error al analizar, se requiere más información para evitar errores'
-          }
-          context.analisisOpenAI = analisisOpenAI
-        }
+      }
       }
     }
     
     // Actualizar queryType en context
     context.queryType = queryType
-    logEvent({ event: 'conversation_query_type', userId, queryType })
-
+    
     // Variables para resultados de productos
     // CRÍTICO: Usar producto del contexto si existe (para preguntas de seguimiento como "tienes en mas colores?")
-    let productStockData = session.currentVariation || session.currentProduct || context.currentVariation || context.currentProduct || null
+    let productStockData = session.currentProduct || context.currentProduct || null
     let productSearchResults = []
     // Si el usuario preguntó por SKU/ID explícito, solo limpiar contexto si es un SKU/ID DISTINTO al producto actual (mantener contexto si confirma el mismo)
     const skuMatchesContext = providedExplicitSku && productStockData?.sku && normalizeCode(providedExplicitSku) === normalizeCode(productStockData.sku)
@@ -1567,21 +1583,18 @@ export async function processMessageWithAI(userId, message, options = {}) {
         productStockData = null
         context.productStockData = null
         context.productVariations = null
-        context.currentVariation = null
         console.log(`[WooCommerce] 🔄 SKU/ID explícito distinto al contexto → búsqueda por SKU/ID (no contexto)`)
       }
     }
     // Si hay producto en contexto, comprobar si el usuario pide OTRO producto (SKU/término distinto)
     // No aplicar cuando la IA ya clasificó como INFORMACION_GENERAL: así no desviamos "¿dirección?" a búsqueda de productos
-    if (queryType !== 'INFORMACION_GENERAL' && queryType !== 'RECOMENDACION' && productStockData && userAsksForDifferentProduct(message, productStockData, analisisOpenAI, providedExplicitSku, providedExplicitId)) {
+    if (queryType !== 'INFORMACION_GENERAL' && productStockData && userAsksForDifferentProduct(message, productStockData, analisisOpenAI, providedExplicitSku, providedExplicitId)) {
       console.log(`[WooCommerce] 🔄 Usuario pide producto distinto al del contexto (${productStockData.sku || productStockData.name}); se hará búsqueda real`)
       productStockData = null
       context.productStockData = null
       context.productVariations = null
-      context.currentVariation = null
       session.currentProduct = null
       session.productVariations = null
-      session.currentVariation = null
     }
     if (productStockData) {
       context.productStockData = productStockData
@@ -1622,23 +1635,24 @@ export async function processMessageWithAI(userId, message, options = {}) {
     // EJECUTAR SEGÚN DECISIÓN DE OpenAI/Regex
     // ============================================
     
-    // Si es FALLBACK, responder directamente con mensaje fijo (sin buscar productos)
+    // Si es FALLBACK, responder directamente con mensaje fijo + contacto (unificado con derivación a humano)
     if (queryType === 'FALLBACK' && analisisOpenAI?.tipoFallback) {
       console.log(`[WooCommerce] ⚠️ Consulta de fallback detectada: ${analisisOpenAI.tipoFallback}`)
-      
+      const contacto = companyInfoService.getCompanyInfo().contacto
+      const lineaContacto = `Puedes escribir a ${contacto.email} o llamar al ${contacto.telefono}.`
       let fallbackMessage = ''
       switch (analisisOpenAI.tipoFallback) {
         case 'FUTURO':
-          fallbackMessage = 'No contamos con información de fechas de reposición.\nPara eso debes contactar a un ejecutivo.'
+          fallbackMessage = `No contamos con información de fechas de reposición.\n${lineaContacto}`
           break
         case 'RESERVA':
-          fallbackMessage = 'Para reservas o compras debes usar el sitio web o contactar a un ejecutivo.'
+          fallbackMessage = `Para reservas o compras puedes usar el sitio web o contactar a un ejecutivo.\n${lineaContacto}`
           break
         case 'DESCUENTO':
-          fallbackMessage = 'Los precios son los publicados.\nPara condiciones comerciales debes contactar a un ejecutivo.'
+          fallbackMessage = `Los precios son los publicados.\nPara condiciones comerciales: ${lineaContacto}`
           break
         default:
-          fallbackMessage = 'Para esa consulta debes contactar a un ejecutivo.'
+          fallbackMessage = `Para esa consulta: ${lineaContacto}`
       }
       
       return createResponse(
@@ -1678,7 +1692,8 @@ export async function processMessageWithAI(userId, message, options = {}) {
           const productoContextoParaVariante = session.currentProduct || context.currentProduct || productStockData
           if (userAsksForDifferentProduct(message, productoContextoParaVariante, analisisOpenAI, providedExplicitSku, providedExplicitId)) {
             const terminoParaBuscar = (analisisOpenAI?.terminoProducto || extractProductTerm(message)).trim()
-            const termValido = terminoParaBuscar && terminoParaBuscar.length >= 2 && !TERMINOS_GENERICOS.includes(terminoParaBuscar.toLowerCase()) && !palabrasVariaciones.includes(terminoParaBuscar.toLowerCase())
+            const terminosGenericosAmb = ['producto', 'productos', 'articulo', 'articulos', 'artículo', 'artículos', 'item', 'items', 'cosa', 'cosas', 'objeto', 'objetos']
+            const termValido = terminoParaBuscar && terminoParaBuscar.length >= 2 && !terminosGenericosAmb.includes(terminoParaBuscar.toLowerCase()) && !palabrasVariaciones.includes(terminoParaBuscar.toLowerCase())
             if (termValido) {
               queryType = 'PRODUCTOS'
               context.terminoProductoParaBuscar = terminoParaBuscar
@@ -1790,11 +1805,12 @@ export async function processMessageWithAI(userId, message, options = {}) {
       } else {
         // AMBIGUA sin palabras de variaciones: si hay término de producto no genérico → promover a PRODUCTOS y buscar
         const terminoAmb = (analisisOpenAI?.terminoProducto || extractProductTerm(message)).trim()
+        const terminosGenericosAmb2 = ['producto', 'productos', 'articulo', 'articulos', 'artículo', 'artículos', 'item', 'items', 'cosa', 'cosas', 'objeto', 'objetos']
         const palabrasSoloVariacion = ['color', 'colores', 'talla', 'tallas', 'tamaño', 'tamaños', 'variacion', 'variaciones', 'variante', 'variantes', 'modelo', 'modelos', 'acabado', 'acabados']
         // Fortificación: no promover a PRODUCTOS si el término extraído es saludo (evita "buenos días" → "bueno dia"/"as")
         const terminoEsSaludo = ['bueno', 'buenos', 'dias', 'días', 'tardes', 'noches', 'hola', 'buen', 'buenas', 'dia', 'día'].includes(terminoAmb.toLowerCase())
         const termValidoParaBuscar = terminoAmb && terminoAmb.length >= 2 &&
-          !TERMINOS_GENERICOS.includes(terminoAmb.toLowerCase()) &&
+          !terminosGenericosAmb2.includes(terminoAmb.toLowerCase()) &&
           !palabrasSoloVariacion.includes(terminoAmb.toLowerCase()) &&
           !terminoEsSaludo
         if (termValidoParaBuscar) {
@@ -1819,11 +1835,10 @@ export async function processMessageWithAI(userId, message, options = {}) {
       }
     }
     
-    // Si es consulta de PRODUCTOS, buscar en WooCommerce
-    // OpenAI ya decidió que es PRODUCTO, solo ejecutamos la búsqueda
-    if (queryType === 'PRODUCTOS') {
-      // Limpiar resultados de búsqueda previos al inicio del flujo PRODUCTOS (evita reutilizar resultados viejos)
-      context.productSearchResults = []
+    // Si es consulta de PRODUCTOS o RECOMENDACION y el usuario está logueado, buscar en WooCommerce.
+    // Si no está logueado, no se consulta catálogo; más abajo se arma texto "necesitas cuenta" (info sensible).
+    // VARIANTE tiene flujo propio y también se restringe por isLoggedIn en el bloque de textoParaIA.
+    if ((queryType === 'PRODUCTOS' || queryType === 'RECOMENDACION') && isLoggedIn) {
       try {
         const decisionSource = providedExplicitSku || providedExplicitId ? 'regex' : 'OpenAI'
         console.log(`[WooCommerce] Buscando productos para consulta: "${message}" (tipo decidido por: ${decisionSource})`)
@@ -1832,7 +1847,8 @@ export async function processMessageWithAI(userId, message, options = {}) {
         let terminoProductoParaBuscar = context.terminoProductoParaBuscar || extractProductTerm(message)
         
         // VALIDACIÓN CRÍTICA: Verificar que el término no sea genérico antes de buscar
-        if (terminoProductoParaBuscar && TERMINOS_GENERICOS.includes(terminoProductoParaBuscar.toLowerCase().trim())) {
+        const terminosGenericos = ['producto', 'productos', 'articulo', 'articulos', 'artículo', 'artículos', 'item', 'items', 'cosa', 'cosas', 'objeto', 'objetos']
+        if (terminoProductoParaBuscar && terminosGenericos.includes(terminoProductoParaBuscar.toLowerCase().trim())) {
           console.log(`[WooCommerce] ⚠️ Término genérico detectado: "${terminoProductoParaBuscar}" → No se buscará para evitar falsos positivos`)
           terminoProductoParaBuscar = null
         }
@@ -1994,7 +2010,6 @@ export async function processMessageWithAI(userId, message, options = {}) {
                 productStockData = lastShown[idx - 1]
                 context.productStockData = productStockData
                 session.currentProduct = lastShown[idx - 1]
-                session.currentVariation = null
                 session.productVariations = null
                 session.lastShownResults = null
                 session.lastSearchTerm = null
@@ -2015,7 +2030,6 @@ export async function processMessageWithAI(userId, message, options = {}) {
             productStockData = exactInLast[0]
             context.productStockData = productStockData
             session.currentProduct = exactInLast[0]
-            session.currentVariation = null
             session.productVariations = null
             session.lastShownResults = null
             session.lastSearchTerm = null
@@ -2043,24 +2057,23 @@ export async function processMessageWithAI(userId, message, options = {}) {
             : [await wordpressService.getProductBySku(skusToTry[0]), null]
           const productBySku = byRaw || byNorm
           if (productBySku) {
-            // CRÍTICO: Si el producto encontrado es una variación, cargar padre/variaciones pero responder con la variación
-            let parentProduct = null
+            // CRÍTICO: Si el producto encontrado es una variación (tiene parent_id), obtener el producto padre
+            let finalProduct = productBySku
             if (productBySku.parent_id) {
               const parentId = productBySku.parent_id
               console.log(`[WooCommerce] 🔄 Producto encontrado es una variación (parent_id: ${parentId}), obteniendo producto padre y variaciones en paralelo...`)
               try {
-                const [parentFetched, variations] = await Promise.all([
+                const [parentProduct, variations] = await Promise.all([
                   wordpressService.getProductById(parentId),
                   wordpressService.getProductVariations(parentId)
                 ])
-                if (parentFetched) {
-                  parentProduct = parentFetched
-                  productBySku.parent_product = parentFetched
-                  console.log(`[WooCommerce] ✅ Producto padre obtenido: ${parentFetched.name || 'N/A'} (ID: ${parentFetched.id})`)
+                if (parentProduct) {
+                  finalProduct = parentProduct
+                  console.log(`[WooCommerce] ✅ Producto padre obtenido: ${parentProduct.name || 'N/A'} (ID: ${parentProduct.id})`)
                   if (Array.isArray(variations) && variations.length > 0) {
                     context.productVariations = variations
                     session.productVariations = variations
-                    console.log(`[WooCommerce] ✅ ${variations.length} variaciones cargadas para "${parentFetched.name}"`)
+                    console.log(`[WooCommerce] ✅ ${variations.length} variaciones cargadas para "${parentProduct.name}"`)
                   }
                 } else {
                   console.log(`[WooCommerce] ⚠️ No se pudo obtener producto padre, usando variación encontrada`)
@@ -2071,30 +2084,22 @@ export async function processMessageWithAI(userId, message, options = {}) {
               }
             }
             
-            productStockData = productBySku
+            productStockData = finalProduct
             context.productStockData = productStockData
-            if (productBySku.parent_id && parentProduct) {
-              session.currentProduct = parentProduct
-              session.currentVariation = productBySku
-              context.currentVariation = productBySku
-            } else {
-              session.currentProduct = productBySku
-              session.currentVariation = null
-              context.currentVariation = null
-            }
-            console.log(`[WooCommerce] ✅ Producto encontrado por SKU explícito: ${productStockData.name || 'N/A'} (SKU: ${productStockData.sku || 'N/A'})`)
-            console.log(`   Stock: ${productStockData.stock_quantity !== null ? productStockData.stock_quantity : 'N/A'}, Precio: ${productStockData.price ? '$' + productStockData.price : 'N/A'}`)
+            session.currentProduct = finalProduct // Guardar producto padre (o el producto si no es variación) para futuras referencias
+            console.log(`[WooCommerce] ✅ Producto encontrado por SKU explícito: ${finalProduct.name || 'N/A'} (SKU: ${finalProduct.sku || 'N/A'})`)
+            console.log(`   Stock: ${finalProduct.stock_quantity !== null ? finalProduct.stock_quantity : 'N/A'}, Precio: ${finalProduct.price ? '$' + finalProduct.price : 'N/A'}`)
             
             // Si es un producto variable (y no es variación), cargar variaciones automáticamente
-            if (productStockData.type === 'variable' && productStockData.id && !productStockData.parent_id) {
+            if (finalProduct.type === 'variable' && finalProduct.id && !finalProduct.parent_id) {
               console.log(`[WooCommerce] 🔄 Producto variable detectado, cargando variaciones automáticamente...`)
               try {
-                const variations = await wordpressService.getProductVariations(productStockData.id)
+                const variations = await wordpressService.getProductVariations(finalProduct.id)
                 if (variations && variations.length > 0) {
                   context.productVariations = variations
                   // CRÍTICO: Guardar también en sesión para que persistan entre mensajes
                   session.productVariations = variations
-                  console.log(`[WooCommerce] ✅ ${variations.length} variaciones cargadas para "${productStockData.name}"`)
+                  console.log(`[WooCommerce] ✅ ${variations.length} variaciones cargadas para "${finalProduct.name}"`)
                 }
               } catch (error) {
                 console.error(`[WooCommerce] ⚠️ Error cargando variaciones: ${error.message}`)
@@ -2133,13 +2138,11 @@ export async function processMessageWithAI(userId, message, options = {}) {
                 productStockData = productsWithCode[0]
                 context.productStockData = productStockData
                 session.currentProduct = productsWithCode[0] // Guardar para futuras referencias
-                session.currentVariation = null
                 console.log(`[WooCommerce] ✅ Producto encontrado por código en nombre/SKU: ${productStockData.name} (SKU real: ${productStockData.sku || 'N/A'})`)
               } else if (productsWithCode.length === 0) {
                 // CRÍTICO: Si no se encuentra el producto, limpiar contexto y retornar mensaje amigable
                 session.currentProduct = null
                 session.productVariations = null
-                session.currentVariation = null
                 console.log(`[WooCommerce] ⚠️ No se encontró producto con SKU "${providedExplicitSku}" - contexto limpiado`)
                 return createResponse(
                   `No encontré un producto con el SKU "${providedExplicitSku}". ¿Podrías confirmarme el SKU correcto o el nombre completo del producto? 😊`,
@@ -2153,7 +2156,6 @@ export async function processMessageWithAI(userId, message, options = {}) {
                   productStockData = exactMatches[0]
                   context.productStockData = productStockData
                   session.currentProduct = exactMatches[0]
-                  session.currentVariation = null
                   console.log(`[WooCommerce] ✅ Un solo match exacto para "${providedExplicitSku}": ${productStockData.name} (SKU: ${productStockData.sku || 'N/A'})`)
                 } else {
                   const sorted = [...productsWithCode].sort((a, b) => {
@@ -2186,7 +2188,6 @@ export async function processMessageWithAI(userId, message, options = {}) {
             productStockData = productById
             context.productStockData = productStockData
             session.currentProduct = productById // Guardar para futuras referencias
-            session.currentVariation = null
             console.log(`[WooCommerce] ✅ Producto encontrado por ID explícito: ${productById.name || 'N/A'} (ID: ${productById.id || 'N/A'})`)
             console.log(`   Stock: ${productById.stock_quantity !== null ? productById.stock_quantity : 'N/A'}, Precio: ${productById.price ? '$' + productById.price : 'N/A'}`)
           } else {
@@ -2380,7 +2381,8 @@ export async function processMessageWithAI(userId, message, options = {}) {
               let productTerm = context.terminoProductoParaBuscar || extractProductTerm(messageWithoutSku)
               
               // VALIDACIÓN CRÍTICA: Verificar que el término no sea genérico
-              if (productTerm && TERMINOS_GENERICOS.includes(productTerm.toLowerCase().trim())) {
+              const terminosGenericos = ['producto', 'productos', 'articulo', 'articulos', 'artículo', 'artículos', 'item', 'items', 'cosa', 'cosas', 'objeto', 'objetos']
+              if (productTerm && terminosGenericos.includes(productTerm.toLowerCase().trim())) {
                 console.log(`[WooCommerce] ⚠️ Término genérico detectado: "${productTerm}" → No se buscará para evitar falsos positivos`)
                 productTerm = ''
               }
@@ -2843,9 +2845,6 @@ export async function processMessageWithAI(userId, message, options = {}) {
       
       // CRÍTICO: Si el producto es una variación (tiene parent_id), obtener el producto padre y variaciones en paralelo
       if (productStockData && productStockData.parent_id) {
-        const variationCandidate = productStockData
-        context.currentVariation = variationCandidate
-        session.currentVariation = variationCandidate
         const parentId = productStockData.parent_id
         console.log(`[WooCommerce] 🔄 Producto en contexto es una variación (parent_id: ${parentId}), obteniendo producto padre y variaciones en paralelo...`)
         try {
@@ -2901,7 +2900,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
           if (tieneValorAtributo) {
           // Normalizar atributo y valor para búsqueda (ya validados en el if)
           const atributoNormalizado = (analisisOpenAI.atributo || '').toLowerCase().trim()
-          const valorNormalizado = normalizeAttributeValue(analisisOpenAI.valorAtributo || '')
+          const valorNormalizado = (analisisOpenAI.valorAtributo || '').toLowerCase().trim()
           
           // OPTIMIZACIÓN: Primero verificar en attributes del producto padre si existe el atributo
           let atributoExisteEnPadre = false
@@ -2909,10 +2908,9 @@ export async function processMessageWithAI(userId, message, options = {}) {
             atributoExisteEnPadre = productStockData.attributes.some(attr => {
               const attrName = (attr.name || '').toLowerCase().trim()
               if (attrName === atributoNormalizado && attr.options && Array.isArray(attr.options)) {
-                // Verificar si el valor existe en las opciones (con normalización conservadora)
+                // Verificar si el valor existe en las opciones
                 return attr.options.some(opt => {
-                  let optValue = (opt || '').toLowerCase().trim()
-                  optValue = optValue.replace(/\s+/g, '').replace(/cms$/i, 'cm')
+                  const optValue = (opt || '').toLowerCase().trim()
                   return optValue === valorNormalizado
                 })
               }
@@ -2923,6 +2921,11 @@ export async function processMessageWithAI(userId, message, options = {}) {
           if (!atributoExisteEnPadre) {
             // El atributo/valor no existe en el producto padre, no puede existir en variaciones
             context.varianteValidada = false
+            context.varianteNoEncontrada = {
+              atributo: analisisOpenAI?.atributo || 'atributo',
+              valor: analisisOpenAI?.valorAtributo || 'valor',
+              razon: 'Atributo/valor no existe en el producto'
+            }
             console.log(`[WooCommerce] ❌ Atributo/valor no existe en producto padre: ${atributoNormalizado}="${valorNormalizado}"`)
           } else {
             // El atributo existe, ahora consultar variaciones para validar
@@ -2938,7 +2941,9 @@ export async function processMessageWithAI(userId, message, options = {}) {
 
               return variation.attributes.some(attr => {
                 const attrName = (attr.name || '').toLowerCase().trim()
-                const attrValue = normalizeAttributeValue(getAttributeDisplayValue(attr))
+                const attrValue = (attr.option || '').toLowerCase().trim()
+                
+                // Verificar coincidencia exacta de atributo y valor (ya normalizados)
                 return attrName === atributoNormalizado && attrValue === valorNormalizado
               })
             })
@@ -2951,13 +2956,16 @@ export async function processMessageWithAI(userId, message, options = {}) {
                 parent_id: productStockData.id
               }
               context.productStockData = productStockData
-              context.currentVariation = productStockData
-              session.currentVariation = productStockData
               context.varianteValidada = true
               console.log(`[WooCommerce] ✅ Variante encontrada: ${atributoNormalizado}="${valorNormalizado}"`)
             } else {
               // Variante no existe en las variaciones (aunque el atributo existe en el padre)
               context.varianteValidada = false
+              context.varianteNoEncontrada = {
+                atributo: analisisOpenAI?.atributo || 'atributo',
+                valor: analisisOpenAI?.valorAtributo || 'valor',
+                razon: 'Atributo existe pero variante específica no encontrada'
+              }
               console.log(`[WooCommerce] ❌ Variante no encontrada en variaciones: ${atributoNormalizado}="${valorNormalizado}"`)
             }
           }
@@ -3005,9 +3013,8 @@ export async function processMessageWithAI(userId, message, options = {}) {
                 if (variation && variation.attributes && Array.isArray(variation.attributes)) {
                   variation.attributes.forEach(attr => {
                     const attrName = (attr.name || '').toLowerCase().trim()
-                    const attrVal = getAttributeDisplayValue(attr)
-                    if (attrNameMatches(attrName) && attrVal) {
-                      valoresDisponibles.add(attrVal.trim())
+                    if (attrNameMatches(attrName) && attr.option) {
+                      valoresDisponibles.add(attr.option.trim())
                     }
                   })
                 }
@@ -3051,6 +3058,11 @@ export async function processMessageWithAI(userId, message, options = {}) {
         } else {
           // Producto no es variable, no puede tener variantes
           context.varianteValidada = false
+          context.varianteNoEncontrada = {
+            atributo: analisisOpenAI?.atributo || 'atributo',
+            valor: analisisOpenAI?.valorAtributo || 'valor',
+            razon: 'Producto no es variable'
+          }
           context.variantesDisponibles = { atributo: analisisOpenAI?.atributo || 'atributo', valores: [] }
           context.variantePidioListar = true
           console.log(`[WooCommerce] ⚠️ Producto no es variable, no puede tener variantes`)
@@ -3152,8 +3164,59 @@ export async function processMessageWithAI(userId, message, options = {}) {
   try {
     // DETECTAR TIPO DE CONSULTA Y ARMAR TEXTO PARA LA IA
     // queryType ya fue decidido por OpenAI o regex arriba
-    
-    if (queryType === 'INFORMACION_GENERAL') {
+    // Usuario no logueado pidiendo productos/precios/stock/variantes: no revelar info sensible; derivar a solicitud de cuenta
+    const queryTypeSensible = queryType === 'PRODUCTOS' || queryType === 'RECOMENDACION' || queryType === 'VARIANTE'
+    if (!isLoggedIn && queryTypeSensible) {
+      const info = companyInfoService.getCompanyInfo()
+      textoParaIA = getMessageNecesitasCuentaParaPreciosStock(message, info.comoRealizarPedido.paso1)
+    } else if (queryType === 'DERIVACION_HUMANO') {
+      const companyInfo = companyInfoService.formatCompanyInfoForAgent()
+      textoParaIA = `Redacta una respuesta breve y profesional en español chileno.
+
+El cliente pidió hablar con una persona o ejecutivo: "${message}"
+
+INSTRUCCIONES:
+- Indica que puede escribir al correo ventas@imblasco.cl o llamar a los teléfonos de contacto para hablar con un ejecutivo (usa la sección CONTACTO de la información abajo).
+- PROHIBIDO: NO digas que "un ejecutivo lo contactará", NO pidas "dejar datos para que los llamemos". Nosotros NO hacemos eso.
+- Sé empático y profesional, estilo WhatsApp.
+- NO busques productos ni des información de catálogo.
+
+INFORMACIÓN DE CONTACTO (usa solo esto):
+${companyInfo}`
+    } else if (queryType === 'RECLAMO') {
+      textoParaIA = `Redacta una respuesta breve y profesional en español chileno.
+
+El cliente expresó una queja o reclamo: "${message}"
+
+INSTRUCCIONES:
+- Reconoce su malestar y agradece que lo comunique.
+- Indica que puede escribir al correo ventas@imblasco.cl para que el equipo revise su caso.
+- PROHIBIDO: NO digas que "un ejecutivo se hará cargo" ni que "te contactaremos". NO pidas "dejar datos para que los llamemos". Nosotros NO hacemos eso.
+- Sé empático y profesional, estilo WhatsApp.
+- NO busques productos ni des información de catálogo.`
+    } else if (queryType === 'DEVOLUCION') {
+      const info = companyInfoService.getCompanyInfo()
+      const garantiaTexto = `GARANTÍA Y DEVOLUCIONES:
+- Productos nuevos: ${info.garantia.productosNuevos}
+- Perecibles o uso breve: ${info.garantia.pereciblesUsoBreve}
+- ${info.garantia.requisitos}
+
+DERECHO A RETRACTO (devoluciones):
+- ${info.derechoRetracto.aplica}
+- ${info.derechoRetracto.costos}
+- ${info.derechoRetracto.noAplica}`
+      textoParaIA = `Redacta una respuesta breve y profesional en español chileno.
+
+El cliente quiere devolver un producto: "${message}"
+
+INSTRUCCIONES:
+- Responde SOLO con la política de garantía y devoluciones. Usa EXACTAMENTE la información siguiente.
+- PROHIBIDO: NO digas que "un ejecutivo se pondrá en contacto", NO pidas "dejar datos" ni "te llamaremos". Nosotros NO hacemos eso.
+- Sé claro y profesional, estilo WhatsApp.
+
+INFORMACIÓN OBLIGATORIA A INCLUIR:
+${garantiaTexto}`
+    } else if (queryType === 'INFORMACION_GENERAL') {
       // VALIDACIÓN CRÍTICA: Verificar que NO sea un saludo mal clasificado
       const normalizedMessage = normalizeSearchText(message).toLowerCase().trim()
       const isGreeting = /^(hola|hi|hello|buenos\s+dias|buenas\s+tardes|buenas\s+noches|buen\s+dia|buen\s+día|hey|saludos)/i.test(message) && 
@@ -3170,6 +3233,11 @@ export async function processMessageWithAI(userId, message, options = {}) {
         )
       }
       
+      // Usuario no logueado preguntando por cotización/cómo comprar: no revelar correo ni pasos; derivar a solicitud de cuenta
+      if (!isLoggedIn && isPreguntaCotizacionOComoComprar(message)) {
+        const info = companyInfoService.getCompanyInfo()
+        textoParaIA = getMessageNecesitasCuentaParaCotizacion(message, info.comoRealizarPedido.paso1)
+      } else {
       // Consulta de información general - el backend ya tiene la info
       const companyInfo = companyInfoService.formatCompanyInfoForAgent()
       // Obtener historial reciente para contexto
@@ -3202,7 +3270,7 @@ Responde de forma apropiada según la consulta del cliente. Usa tu criterio para
 - NO ofrezcas funciones que no existen (reservas, carrito)
 - NO reveles procesos técnicos internos
 - NO respondas con información de empresa si la consulta es solo un saludo genérico`
-      
+      }
     } else if (queryType === 'VARIANTE') {
       try {
       // Consulta sobre variante específica (color, tamaño, etc.)
@@ -3242,7 +3310,7 @@ Informa al cliente de forma empática que no se encontró el producto.
           } else if (validarDatoNumerico(productStockData.stock_quantity)) {
             const stockQty = parseStockQuantity(productStockData.stock_quantity)
             stockInfo = stockQty > 0 
-              ? `${stockQty} unidad${stockQty !== 1 ? 'es' : ''} disponible${stockQty !== 1 ? 's' : ''}`
+              ? `${stockQty} unidad${stockQty > 1 ? 'es' : ''} disponible${stockQty > 1 ? 's' : ''}`
               : 'Stock agotado (0 unidades)'
           } else if (productStockData.stock_status === 'instock') {
             stockInfo = 'disponible en stock'
@@ -3272,7 +3340,14 @@ Informa al cliente de forma empática que no se encontró el producto.
 El cliente preguntó: "${message}"${historyContext}
 
 🎯 OBJETIVO:
-Presenta los ${atributo}s disponibles de forma clara y útil para el cliente.
+Presenta los ${atributo}s disponibles con jerarquía visual clara (formato chat-friendly).
+
+FORMATO SUGERIDO:
+- Línea de confirmación: "Sí, tenemos el [producto] disponible."
+- 📦 Stock: [valor exacto]
+- 💰 Precio: [valor si está disponible]
+- 🎨 ${atributo.charAt(0).toUpperCase() + atributo.slice(1)}s disponibles: lista con viñetas • (una por valor). Usa SOLO: ${valoresStr}
+- 👉 Cierre: "Dime qué ${atributo} y cantidad necesitas y lo reviso al tiro" o similar.
 
 ✅ DATOS QUE DEBES USAR (OBLIGATORIO):
 - Lista SOLO los ${atributo}s proporcionados arriba: ${valoresStr}
@@ -3280,17 +3355,10 @@ Presenta los ${atributo}s disponibles de forma clara y útil para el cliente.
 - Incluye precio si está disponible: ${priceInfo}
 - NO cambies nombres, SKUs, precios ni valores de ${atributo}
 
-💡 LIBERTAD PARA REDACTAR:
-- Puedes presentar los ${atributo}s de forma natural (lista, texto, agrupados)
-- Puedes destacar los más relevantes si hay muchos
-- Puedes adaptar el tono según el contexto
-- Puedes sugerir el ${atributo} más popular o disponible si es relevante
-
 🚫 RESTRICCIONES CRÍTICAS:
 - NO inventes ${atributo}s que no estén en la lista: ${valoresStr}
 - NO cambies los valores de stock, precio, SKU o ${atributo}
-- NO digas "disponible" si el stock es 0 o "Stock agotado (0 unidades)"
-- NO menciones "producto padre", "SKU padre" ni "SKU hijo"`
+- NO digas "disponible" si el stock es 0 o "Stock agotado (0 unidades)"`
         }
       } else if (varianteProductoValido && context.varianteValidada === true) {
         // Variante existe y está validada
@@ -3298,7 +3366,7 @@ Presenta los ${atributo}s disponibles de forma clara y útil para el cliente.
         const varianteQty = parseStockQuantity(productStockData.stock_quantity)
         if (productStockData.stock_quantity !== null && productStockData.stock_quantity !== undefined) {
           if (varianteQty > 0) {
-            stockInfo = `${varianteQty} unidad${varianteQty !== 1 ? 'es' : ''} disponible${varianteQty !== 1 ? 's' : ''}`
+            stockInfo = `${varianteQty} unidad${varianteQty > 1 ? 'es' : ''} disponible${varianteQty > 1 ? 's' : ''}`
           } else {
             stockInfo = 'Stock agotado (0 unidades)'
           }
@@ -3326,16 +3394,13 @@ INSTRUCCIONES OBLIGATORIAS:
 - Responde confirmando que el producto SÍ está disponible en ${atributo} ${valorAtributo}
 - Formato: "Sí, el ${productStockData.name} está disponible en ${atributo} ${valorAtributo}."
 - Incluye stock y precio si están disponibles
-- Ofrece mostrar otras variantes disponibles de ${atributo} si el cliente quiere
 - Responde de forma breve y profesional, estilo WhatsApp
-- NO menciones "producto padre", "SKU padre" ni "SKU hijo"
 - NO inventes información que no esté arriba`
         
       } else if (context.varianteValidada === false) {
         // Variante no existe o no pudimos listar (evitar decir "no disponible en color valor")
         const atributo = analisisOpenAI?.atributo || 'atributo'
         const nombreProducto = productStockData?.name || analisisOpenAI?.terminoProducto || 'el producto'
-        // variantePidioListar: si true, cliente pidió listar variaciones; si false, pidió una variante concreta. No refactorizar sin actualizar asignaciones (2594, 2919, 2926, 2934, 2951).
         const pidioListar = context.variantePidioListar === true
         const valorConcreto = analisisOpenAI?.valorAtributo && String(analisisOpenAI.valorAtributo).trim()
         
@@ -3475,60 +3540,8 @@ INSTRUCCIONES OBLIGATORIAS:
 - Sé profesional y cercano, estilo WhatsApp`
       }
       
-    } else if (queryType === 'RECOMENDACION') {
-      try {
-        const terminoRec = (analisisOpenAI?.terminoProducto || extractRecommendationTerm(message)).trim()
-        let productosCandidatos = []
-        if (terminoRec) {
-          productosCandidatos = await wordpressService.searchProductsInWordPress(terminoRec, 10)
-        } else {
-          productosCandidatos = await getCachedPopularProducts()
-        }
-        const candidatos = Array.isArray(productosCandidatos) ? productosCandidatos.filter(p => p && p.name) : []
-        const candidatosLimitados = candidatos.slice(0, 8)
-        
-        if (candidatosLimitados.length === 0) {
-          textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
-
-SITUACIÓN:
-El cliente pidió recomendaciones, pero no se encontraron productos candidatos.
-
-INSTRUCCIONES OBLIGATORIAS:
-- Pide más detalles (tipo de producto, ocasión, presupuesto, cantidad)
-- Sé profesional y cercano, estilo WhatsApp`
-        } else {
-          const stockByProductId = await enrichStockForListProducts(candidatosLimitados)
-          const listaProductos = candidatosLimitados.map((p, index) => {
-            const stockInfo = getStockTextForListProduct(p, stockByProductId)
-            const priceText = validarDatoNumerico(p.price) ? `$${Number(p.price).toLocaleString('es-CL')}` : 'N/A'
-            return `${index + 1}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''} - ${priceText} - Stock: ${stockInfo}`
-          }).join('\n')
-          
-          textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
-
-MENSAJE DEL CLIENTE:
-"${message}"
-${terminoRec ? `\nTÉRMINO DE CONTEXTO: ${terminoRec}` : ''}
-
-LISTA DE PRODUCTOS CANDIDATOS:
-${listaProductos}
-
-INSTRUCCIONES OBLIGATORIAS:
-- El cliente pidió recomendaciones de productos
-- Solo puedes recomendar productos de la lista anterior
-- Elige 3 a 5 productos que mejor se ajusten a lo que pide el cliente (ocasión, uso, presupuesto, tipo de producto si lo mencionó)
-- Para cada producto recomendado, incluye: nombre, SKU (si existe), precio y una breve razón
-- No inventes productos ni datos que no estén en la lista
-- Invita al cliente a preguntar por uno en concreto para más detalle
-- Sé profesional y cercano, estilo WhatsApp`
-        }
-      } catch (errRec) {
-        console.error('[RECOMENDACION] Error construyendo textoParaIA:', errRec?.message)
-        textoParaIA = `Redacta una respuesta breve en español chileno. El cliente pidió recomendaciones. Pide más detalles (tipo de producto, ocasión y presupuesto) para poder recomendar mejor. Sé amable y profesional.`
-      }
-      
-    } else if (queryType === 'PRODUCTOS') {
-      // Consulta de productos - el agente consultó WooCommerce
+    } else if (queryType === 'PRODUCTOS' || queryType === 'RECOMENDACION') {
+      // Consulta de productos o recomendaciones - el agente consultó WooCommerce
       if (productStockData) {
         // CRÍTICO: Si el producto viene de lastShownResults (ej. "el primero") o de un solo resultado,
         // las variaciones pueden no estar cargadas → stock incorrecto (padre en vez de suma variaciones).
@@ -3540,14 +3553,14 @@ INSTRUCCIONES OBLIGATORIAS:
               wordpressService.getProductVariations(parentId)
             ])
             if (parentProduct) {
-              productStockData.parent_product = parentProduct
+              productStockData = parentProduct
+              context.productStockData = productStockData
+              session.currentProduct = parentProduct
               if (Array.isArray(variationsFromParent) && variationsFromParent.length > 0) {
                 context.productVariations = variationsFromParent
                 session.productVariations = variationsFromParent
+                console.log(`[WooCommerce] ✅ PRODUCTOS: producto era variación → padre + ${variationsFromParent.length} variaciones cargadas`)
               }
-              context.productStockData = productStockData
-              session.currentProduct = productStockData
-              console.log(`[WooCommerce] ✅ PRODUCTOS: variación con padre + ${(variationsFromParent || []).length} variaciones cargadas`)
             }
           } catch (e) {
             console.warn('[WooCommerce] ⚠️ Error cargando padre/variaciones para variación:', e?.message)
@@ -3568,7 +3581,7 @@ INSTRUCCIONES OBLIGATORIAS:
         // Se encontró información del producto en WooCommerce
         // Construir información de stock más detallada
         // CRÍTICO: Siempre mostrar stock, incluso si es 0
-        const isVariation = (productStockData.parent_id != null)
+        const isVariation = productStockData.is_variation
         let stockInfo = ''
         // Si es producto variable con variaciones, el stock total es la SUMA de las variaciones (no el valor del padre)
         if (context.productVariations && context.productVariations.length > 0 && !isVariation) {
@@ -3581,7 +3594,7 @@ INSTRUCCIONES OBLIGATORIAS:
         } else if (productStockData.stock_quantity !== null && productStockData.stock_quantity !== undefined) {
           const qty = parseStockQuantity(productStockData.stock_quantity)
           if (qty > 0) {
-            stockInfo = `${qty} unidad${qty !== 1 ? 'es' : ''} disponible${qty !== 1 ? 's' : ''}`
+            stockInfo = `${qty} unidad${qty > 1 ? 'es' : ''} disponible${qty > 1 ? 's' : ''}`
           } else {
             stockInfo = 'Stock agotado (0 unidades)'
           }
@@ -3596,6 +3609,11 @@ INSTRUCCIONES OBLIGATORIAS:
         const priceInfo = productStockData.price 
           ? `$${parseFloat(productStockData.price).toLocaleString('es-CL')}` 
           : 'Precio no disponible'
+        
+        // Si es una variación, incluir información del producto padre
+        const parentInfo = isVariation && productStockData.parent_product 
+          ? `\n- Producto padre: ${productStockData.parent_product.name}`
+          : ''
         
         // Si hay variaciones disponibles (producto variable), incluirlas
         let variationsInfo = ''
@@ -3616,19 +3634,7 @@ INSTRUCCIONES OBLIGATORIAS:
               ? `${vQty} unidad${vQty !== 1 ? 'es' : ''}`
               : v.stock_status === 'instock' ? 'disponible' : 'sin stock'
             const vPrice = v.price ? `$${parseFloat(v.price).toLocaleString('es-CL')}` : 'Precio N/A'
-            let label = v.name || ''
-            if (Array.isArray(v.attributes) && v.attributes.length > 0) {
-              const parts = v.attributes
-                .map(attr => {
-                  const val = getAttributeDisplayValue(attr)
-                  const n = (attr.name || '').trim()
-                  return n && val ? `${n}: ${val}` : ''
-                })
-                .filter(Boolean)
-              if (parts.length > 0) label = parts.join(', ') + (v.sku ? ` (SKU: ${v.sku})` : '')
-              else if (v.sku) label = label + ` (SKU: ${v.sku})`
-            } else if (v.sku) label = label + (label ? ' ' : '') + `(SKU: ${v.sku})`
-            return `  - ${label} - ${vStock} - ${vPrice}`
+            return `  - ${v.name}${v.sku ? ` (SKU: ${v.sku})` : ''} - ${vStock} - ${vPrice}`
           }).join('\n')
           
           variationsInfo = `\n\nVARIACIONES DISPONIBLES (${context.productVariations.length} total${context.productVariations.length > 5 ? ', mostrando 5' : ''}):\n${variationsList}`
@@ -3637,12 +3643,12 @@ INSTRUCCIONES OBLIGATORIAS:
           }
         }
         
-        // Número de unidades a citar en instrucciones (producto variable = suma variaciones; si no, stock_quantity del producto). Usado en prompt para "¿Cuántas unidades hay?"; no eliminar sin revisar prompt.
+        // Número de unidades a citar en instrucciones (producto variable = suma variaciones; si no, stock_quantity del producto)
         const stockNumberForPrompt = (context.productVariations && context.productVariations.length > 0 && !isVariation)
           ? context.productVariations.reduce((s, v) => s + parseStockQuantity(v.stock_quantity), 0)
           : (productStockData.stock_quantity != null ? parseStockQuantity(productStockData.stock_quantity) : null)
         
-        // Método de búsqueda y nivel de confianza (informativos para el prompt; no usados para lógica de flujo).
+        // Determinar método de búsqueda y nivel de confianza
         const searchMethod = providedExplicitSku ? 'SKU exacto' : providedExplicitId ? 'ID exacto' : 'búsqueda por nombre'
         const confidenceLevel = providedExplicitSku || providedExplicitId ? 'ALTA (identificación exacta)' : 'MEDIA (coincidencia por nombre)'
         
@@ -3655,7 +3661,7 @@ INFORMACIÓN REAL DEL PRODUCTO (consultada desde WooCommerce en tiempo real):
 - Nombre del producto: ${productStockData.name}
 ${productStockData.sku ? `- SKU: ${productStockData.sku}` : ''}
 - Stock: ${stockInfo}
-- Precio: ${priceInfo}${variationsInfo}
+- Precio: ${priceInfo}${parentInfo}${variationsInfo}
 
 MÉTODO DE BÚSQUEDA: ${searchMethod}
 NIVEL DE CONFIANZA: ${confidenceLevel}
@@ -3669,22 +3675,18 @@ VALIDACIONES OBLIGATORIAS ANTES DE RESPONDER:
 4. Verifica que el precio mencionado sea "${priceInfo}"
 5. Si algún dato no coincide, NO lo uses y marca "N/A" o "no disponible"
 
-INSTRUCCIONES OBLIGATORIAS - FORMATO EXACTO:
-Responde EXACTAMENTE en este formato, con saltos de línea entre cada elemento:
+INSTRUCCIONES OBLIGATORIAS - FORMATO CHAT-FRIENDLY (jerarquía visual):
+Responde con formato humano y fácil de leer en chat. Saltos de línea entre bloques.
 
 1. Confirmación con nombre: "Sí, tenemos el ${productStockData.name} disponible."
 2. SKU (en línea separada): "SKU: ${productStockData.sku || 'N/A'}."
 3. Stock (en línea separada, OBLIGATORIO): "Stock: ${stockInfo}."
-   ⚠️ CRÍTICO: SIEMPRE incluye el stock, incluso si el cliente solo pregunta por precio.
-   ⚠️ Si el stock es 0, muestra "Stock agotado (0 unidades)".
-   ⚠️ Si hay stock, DEBES mostrar el número exacto de unidades: "Stock: ${stockInfo}."
-   ⚠️ Si el cliente pregunta "¿Cuántas unidades hay?", DEBES responder con el número exacto: "${stockNumberForPrompt != null ? stockNumberForPrompt : 'N/A'} unidades disponibles."
+   CRÍTICO: Siempre incluye el stock con número exacto. Si preguntan "¿Cuántas unidades hay?" responde: ${stockNumberForPrompt != null ? stockNumberForPrompt : 'N/A'} unidades disponibles.
 4. Precio (en línea separada): "Precio: ${priceInfo}."
-${variationsInfo ? '5. Variaciones (en líneas separadas): Menciona las variaciones disponibles con sus SKUs, stock y precios.' : ''}
+${variationsInfo ? '5. Variaciones (línea en blanco antes): Título 🎨 "Colores disponibles" (o el atributo) y precio c/u si aplica. Lista con viñetas • (una por variante: nombre y unidades). Usa SOLO datos de VARIACIONES DISPONIBLES arriba. 6. Cierre: "Dime qué color y cantidad necesitas y lo reviso al tiro" o similar. 👉' : '5. Cierre: "¿Te gustaría saber algo más? 😊" o similar.'}
 
 ⚠️ REGLA ABSOLUTA: NUNCA omitas el stock en tu respuesta, incluso si el cliente pregunta solo por precio o solo por stock.
 ⚠️ REGLA CRÍTICA: Si stock_quantity existe, SIEMPRE muestra el número exacto de unidades, no solo "disponible en stock".
-${variationsInfo ? '6. Pregunta de seguimiento (en línea separada): "¿Te gustaría saber algo más? 😊"' : '5. Pregunta de seguimiento (en línea separada): "¿Te gustaría saber algo más? 😊"'}
 
 IMPORTANTE:
 - Cada elemento debe estar en una línea separada (usa saltos de línea)
@@ -3723,7 +3725,7 @@ INSTRUCCIONES OBLIGATORIAS:
           const stockByProductId = await enrichStockForListProducts(sliceForList)
           const productsList = sliceForList.map((p, index) => {
             const stockInfo = getStockTextForListProduct(p, stockByProductId)
-            return `${index + 1}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''}${p.price != null ? ` - $${parseFloat(p.price).toLocaleString('es-CL')}` : ''} - Stock: ${stockInfo}`
+            return `${index + 1}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''}${p.price ? ` - $${p.price.toLocaleString('es-CL')}` : ''} - Stock: ${stockInfo}`
           }).join('\n')
           
           // Obtener historial reciente para contexto
@@ -3743,10 +3745,15 @@ VALIDACIONES OBLIGATORIAS ANTES DE RESPONDER:
 3. NO agregues productos que no estén en la lista
 4. NO inventes información adicional
 
+FORMATO CHAT-FRIENDLY (obligatorio para listas):
+- Para cada producto usa: nombre (y SKU si existe), luego 📦 Stock: [valor], luego 💰 Precio: [valor]. Deja una línea en blanco entre cada producto.
+- Cierre amable en una línea al final: 👉 "Dime cuál te interesa (por número, SKU o nombre) y te doy más detalles."
+
 INSTRUCCIONES OBLIGATORIAS:
 - Menciona que encontraste ${finalSearchResults.length} producto(s) relacionado(s) con "${displayQuery}"
 - Lista los productos en el orden mostrado arriba (1, 2, 3...)
 - Para cada producto, incluye: nombre, SKU (si existe), precio (si existe) y stock
+- Después de la línea del precio de cada producto, deja siempre una línea en blanco (punto aparte) antes de la frase descriptiva de ese producto
 - Pide al cliente que confirme cuál es el producto que busca (por número, SKU o nombre exacto)
 - Responde máximo 4-5 líneas, profesional, estilo WhatsApp
 - NO inventes información que no esté en la lista arriba
@@ -3763,7 +3770,6 @@ INSTRUCCIONES OBLIGATORIAS:
           // CRÍTICO: Limpiar contexto cuando producto no se encuentra con referencia explícita
           // Esto previene que el contexto de productos anteriores persista incorrectamente
           session.currentProduct = null
-          session.currentVariation = null
           session.productVariations = null
           console.log(`[WooCommerce] ⚠️ Producto no encontrado con referencia explícita - contexto limpiado`)
           
@@ -3833,10 +3839,15 @@ VALIDACIONES OBLIGATORIAS ANTES DE RESPONDER:
 3. NO agregues productos que no estén en la lista
 4. NO inventes información adicional
 
+FORMATO CHAT-FRIENDLY (obligatorio para listas):
+- Para cada producto usa: nombre (y SKU si existe), luego 📦 Stock: [valor], luego 💰 Precio: [valor]. Deja una línea en blanco entre cada producto.
+- Cierre amable en una línea al final: 👉 "Dime cuál te interesa (por número, SKU o nombre) y te doy más detalles."
+
 INSTRUCCIONES OBLIGATORIAS:
 - Menciona que encontraste ${finalSearchResults.length} producto(s) relacionado(s) con "${displayQueryInner}"
 - Lista los productos en el orden mostrado arriba (1, 2, 3...)
 - Para cada producto, incluye: nombre, SKU (si existe), stock y precio
+- Después de la línea del precio de cada producto, deja siempre una línea en blanco (punto aparte) antes de la frase descriptiva de ese producto
 - Indica cuáles tienen stock disponible
 - Si hay más de ${MAX_PRODUCTS_TO_ENRICH_STOCK} productos, menciona que hay más opciones disponibles
 - Pide al cliente que confirme cuál es el producto que busca (por número, SKU o nombre exacto)
@@ -3873,7 +3884,7 @@ INSTRUCCIONES OBLIGATORIAS:
       textoParaIA = `Redacta una respuesta clara y profesional en español chileno para la siguiente consulta del cliente: "${message}".
 
 Responde de forma breve (máximo 3-4 líneas), profesional y cercana, estilo WhatsApp.`
-    } // Cierra el if (queryType === 'INFORMACION_GENERAL') / else if (queryType === 'VARIANTE') / else if (queryType === 'CARACTERISTICAS') / else if (queryType === 'PRODUCTOS') / else
+    } // Cierra el if (queryType === 'INFORMACION_GENERAL') / else if (queryType === 'VARIANTE') / else if (queryType === 'CARACTERISTICAS') / else if (queryType === 'PRODUCTOS' || 'RECOMENDACION') / else
     
     // Fortificación: si la consulta era mixta (info general + producto), incluir info empresa al inicio de la respuesta
     if (context.alsoAnswerInfoGeneral && textoParaIA && textoParaIA.trim().length > 0) {
@@ -3919,20 +3930,6 @@ Responde de forma breve (máximo 3-4 líneas), profesional y cercana, estilo Wha
     responseOptions.push({ type: 'action', value: ACTIONS.VIEW_CART, label: '📋 Ver Carrito' })
   }
   
-  // Si el usuario no está logueado y pregunta por productos, sugerir login
-  if (queryType === 'PRODUCTOS' && !isLoggedIn) {
-    // El agente ya le dirá que necesita login, pero podemos agregar opción
-    // (esto se puede hacer desde el frontend también)
-  }
-
-  logEvent({
-    event: 'conversation_response',
-    userId,
-    queryType,
-    latencyMs: Date.now() - processStart,
-    productCount: (context.productSearchResults || []).length
-  })
-
   return createResponse(
       aiResponse,
       session.state,
@@ -3940,7 +3937,6 @@ Responde de forma breve (máximo 3-4 líneas), profesional y cercana, estilo Wha
       cart
     )
   } catch (error) {
-    logEvent({ event: 'conversation_error', userId, error: error.message })
     console.error('❌ Error en processMessageWithAI:', error)
     console.error('   Stack:', error.stack)
     console.error('   userId:', userId)

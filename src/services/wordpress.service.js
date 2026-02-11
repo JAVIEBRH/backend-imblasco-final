@@ -4,6 +4,10 @@
  * El agente está autenticado con Consumer Key/Secret para consultar productos y stock
  */
 
+import { normalizeCode } from '../utils/normalization.js'
+import { withTimeout, withRetry } from '../utils/resilience.js'
+import { logEvent } from '../utils/structured-logger.js'
+
 // Función helper para obtener variables de entorno (carga lazy)
 function getWooCommerceConfig() {
   const WC_URL = process.env.WC_URL || 'https://imblasco.cl'
@@ -22,6 +26,19 @@ setTimeout(() => {
   console.log('  WC_KEY:', WC_KEY ? `✅ Configurada (${WC_KEY.length} chars, inicia: ${WC_KEY.substring(0, 5)}...)` : '❌ NO CONFIGURADA')
   console.log('  WC_SECRET:', WC_SECRET ? `✅ Configurada (${WC_SECRET.length} chars, inicia: ${WC_SECRET.substring(0, 5)}...)` : '❌ NO CONFIGURADA')
 }, 100)
+
+/**
+ * Parsear cantidad de stock (alineado con conversation.service parseStockQuantity).
+ * Usa Number + Math.floor para consistencia; evita parseInt.
+ * @param {*} val - stock_quantity (string o número)
+ * @returns {number} Entero >= 0, o 0 si no es un número válido
+ */
+function parseStockQuantity(val) {
+  if (val == null) return 0
+  const n = Number(val)
+  if (!Number.isFinite(n) || n < 0) return 0
+  return Math.floor(n)
+}
 
 // Autenticación básica HTTP para WooCommerce REST API
 function getAuthHeader() {
@@ -43,38 +60,49 @@ function getAuthHeader() {
 async function wcRequest(endpoint, options = {}, returnHeaders = false) {
   const { WC_URL } = getWooCommerceConfig()
   const url = `${WC_URL}/wp-json/wc/v3/${endpoint}`
-  
+  const WC_TIMEOUT_MS = 25000
+  const WC_MAX_RETRIES = 2
+  const WC_RETRY_DELAY_MS = 800
+
   try {
-    const response = await fetch(url, {
-      method: options.method || 'GET',
-      headers: {
-        'Authorization': getAuthHeader(),
-        'Content-Type': 'application/json',
-        ...options.headers
-      },
-      ...options
-    })
-    
-    if (!response.ok) {
-      const errorText = await response.text()
-      console.error(`❌ Error WooCommerce API (${response.status}):`, errorText.substring(0, 200))
-      throw new Error(`WooCommerce API error: ${response.status} ${response.statusText}`)
-    }
-    
-    const data = await response.json()
-    
-    if (returnHeaders) {
-      return {
-        data,
-        headers: {
-          total: response.headers.get('X-WP-Total'),
-          totalPages: response.headers.get('X-WP-TotalPages')
+    return await withRetry(async () => {
+      const response = await withTimeout(
+        WC_TIMEOUT_MS,
+        fetch(url, {
+          method: options.method || 'GET',
+          headers: {
+            'Authorization': getAuthHeader(),
+            'Content-Type': 'application/json',
+            ...options.headers
+          },
+          ...options
+        })
+      )
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error(`❌ Error WooCommerce API (${response.status}):`, errorText.substring(0, 200))
+        throw new Error(`WooCommerce API error: ${response.status} ${response.statusText}`)
+      }
+
+      const data = await response.json()
+
+      if (returnHeaders) {
+        return {
+          data,
+          headers: {
+            total: response.headers.get('X-WP-Total'),
+            totalPages: response.headers.get('X-WP-TotalPages')
+          }
         }
       }
-    }
-    
-    return data
+
+      return data
+    }, { maxRetries: WC_MAX_RETRIES, delayMs: WC_RETRY_DELAY_MS })
+    logEvent({ event: 'woo_request', endpoint, latencyMs: Date.now() - start })
+    return result
   } catch (error) {
+    logEvent({ event: 'woo_request', endpoint, latencyMs: Date.now() - start, error: error.message })
     console.error(`❌ Error conectando a WooCommerce:`, error.message)
     throw error
   }
@@ -124,7 +152,7 @@ export async function getProductStock(identifier) {
     }
     
     const stockQuantity = product.stock_quantity !== null && product.stock_quantity !== undefined 
-      ? parseInt(product.stock_quantity) 
+      ? parseStockQuantity(product.stock_quantity) 
       : null
     
     const available = product.stock_status === 'instock' || (stockQuantity !== null && stockQuantity > 0)
@@ -170,11 +198,11 @@ export async function getProductsSample(limit = 100) {
       sku: product.sku || '',
       price: product.price ? parseFloat(product.price) : null,
       stock_quantity: product.stock_quantity !== null && product.stock_quantity !== undefined 
-        ? parseInt(product.stock_quantity) 
+        ? parseStockQuantity(product.stock_quantity) 
         : null,
       stock_status: product.stock_status || 'unknown',
       manage_stock: product.manage_stock || false,
-      available: product.stock_status === 'instock' || (product.stock_quantity && parseInt(product.stock_quantity) > 0)
+      available: product.stock_status === 'instock' || (product.stock_quantity != null && parseStockQuantity(product.stock_quantity) > 0)
     }))
   } catch (error) {
     console.error('Error obteniendo muestra de productos:', error.message)
@@ -235,11 +263,11 @@ export async function getAllProducts() {
       sku: product.sku || '',
       price: product.price ? parseFloat(product.price) : null,
       stock_quantity: product.stock_quantity !== null && product.stock_quantity !== undefined 
-        ? parseInt(product.stock_quantity) 
+        ? parseStockQuantity(product.stock_quantity) 
         : null,
       stock_status: product.stock_status || 'unknown',
       manage_stock: product.manage_stock || false,
-      available: product.stock_status === 'instock' || (product.stock_quantity && parseInt(product.stock_quantity) > 0),
+      available: product.stock_status === 'instock' || (product.stock_quantity != null && parseStockQuantity(product.stock_quantity) > 0),
       type: product.type || 'simple' // Agregar tipo de producto (simple, variable, etc.)
     }))
   } catch (error) {
@@ -269,11 +297,11 @@ export async function searchProductsInWordPress(searchTerm, limit = 10) {
       sku: product.sku || '',
       price: product.price ? parseFloat(product.price) : null,
       stock_quantity: product.stock_quantity !== null && product.stock_quantity !== undefined 
-        ? parseInt(product.stock_quantity) 
+        ? parseStockQuantity(product.stock_quantity) 
         : null,
       stock_status: product.stock_status || 'unknown',
       manage_stock: product.manage_stock || false,
-      available: product.stock_status === 'instock' || (product.stock_quantity && parseInt(product.stock_quantity) > 0),
+      available: product.stock_status === 'instock' || (product.stock_quantity != null && parseStockQuantity(product.stock_quantity) > 0),
       type: product.type || 'simple',
       description: product.description || '',
       short_description: product.short_description || '',
@@ -335,11 +363,11 @@ export async function getProductBySku(sku) {
             sku: product.sku || '',
             price: product.price ? parseFloat(product.price) : null,
             stock_quantity: product.stock_quantity !== null && product.stock_quantity !== undefined 
-              ? parseInt(product.stock_quantity) 
+              ? parseStockQuantity(product.stock_quantity) 
               : null,
             stock_status: product.stock_status || 'unknown',
             manage_stock: product.manage_stock || false,
-            available: product.stock_status === 'instock' || (product.stock_quantity && parseInt(product.stock_quantity) > 0),
+            available: product.stock_status === 'instock' || (product.stock_quantity != null && parseStockQuantity(product.stock_quantity) > 0),
             type: product.type || 'simple',
             description: product.description || '',
             short_description: product.short_description || '',
@@ -385,11 +413,11 @@ export async function getProductById(productId) {
       sku: product.sku || '',
       price: product.price ? parseFloat(product.price) : null,
       stock_quantity: product.stock_quantity !== null && product.stock_quantity !== undefined 
-        ? parseInt(product.stock_quantity) 
+        ? parseStockQuantity(product.stock_quantity) 
         : null,
       stock_status: product.stock_status || 'unknown',
       manage_stock: product.manage_stock || false,
-      available: product.stock_status === 'instock' || (product.stock_quantity && parseInt(product.stock_quantity) > 0),
+      available: product.stock_status === 'instock' || (product.stock_quantity != null && parseStockQuantity(product.stock_quantity) > 0),
       type: product.type || 'simple',
       description: product.description || '',
       short_description: product.short_description || '',
@@ -459,11 +487,11 @@ export async function getProductVariations(productId) {
       sku: variation.sku || '',
       price: variation.price ? parseFloat(variation.price) : null,
       stock_quantity: variation.stock_quantity !== null && variation.stock_quantity !== undefined 
-        ? parseInt(variation.stock_quantity) 
+        ? parseStockQuantity(variation.stock_quantity) 
         : null,
       stock_status: variation.stock_status || 'unknown',
       manage_stock: variation.manage_stock || false,
-      available: variation.stock_status === 'instock' || (variation.stock_quantity && parseInt(variation.stock_quantity) > 0),
+      available: variation.stock_status === 'instock' || (variation.stock_quantity != null && parseStockQuantity(variation.stock_quantity) > 0),
       attributes: variation.attributes || [], // Array de objetos con {id, name, option}
       parent_id: productId
     }))
@@ -545,20 +573,6 @@ export async function findVariationBySku(sku, variableProducts) {
   
   console.log(`[WooCommerce] ❌ No se encontró variación con SKU "${sku}" (buscado en ${variableProducts.length} productos variables)`)
   return null
-}
-
-/**
- * Normalizar código/SKU (helper para uso interno)
- * Debe ser consistente con normalizeCode en conversation.service.js
- * @param {string} code - Código/SKU a normalizar
- * @returns {string} - Código normalizado
- */
-function normalizeCode(code) {
-  if (!code || typeof code !== 'string') return ''
-  return code
-    .toUpperCase()
-    .replace(/[?¿!¡.,;:()\[\]{}'"\s_-]/g, '')  // Eliminar signos de interrogación, exclamación, puntuación, espacios, guiones
-    .trim()
 }
 
 /**

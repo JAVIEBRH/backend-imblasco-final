@@ -230,9 +230,10 @@ ventas@imblasco.cl
 ===========================
 FALLBACKS / CASOS ESPECIALES
 ===========================
-- Reclamos: empatía + derivar a ventas.
-- Descuentos / precios especiales: derivar a ventas.
-- Reposición: derivar a ventas.
+- Reclamos: empatía + indicar que puede escribir al correo ventas (NO decir que un ejecutivo lo contactará ni pedir "dejar datos").
+- Derivación a humano: dar correo y teléfonos para que el cliente contacte (NO prometer que nosotros lo contactaremos).
+- Descuentos / precios especiales: derivar a ventas (correo/teléfono).
+- Reposición: derivar a ventas (correo/teléfono).
 - Consultas mixtas (producto + info empresa): entregar ambas.
 
 ===========================
@@ -314,7 +315,7 @@ Mensaje: "${message}"${historyContext}${productContext}
 INSTRUCCIONES:
 Analiza el mensaje y responde SOLO con un JSON válido en este formato exacto:
 {
-  "tipo": "PRODUCTO" | "INFORMACION_GENERAL" | "AMBIGUA" | "VARIANTE" | "CARACTERISTICAS" | "FALLBACK" | "RECOMENDACION",
+  "tipo": "PRODUCTO" | "INFORMACION_GENERAL" | "AMBIGUA" | "VARIANTE" | "CARACTERISTICAS" | "FALLBACK" | "RECOMENDACION" | "RECLAMO" | "DERIVACION_HUMANO",
   "terminoProducto": "término extraído o null",
   "sku": "SKU detectado o null",
   "id": "ID detectado o null",
@@ -347,10 +348,15 @@ REGLAS ESTRICTAS (CRÍTICO - EVITAR FALSOS POSITIVOS):
    - "¿Me guardan uno?" → FALLBACK (tipoFallback: "RESERVA")
    - "¿Me hacen precio por volumen?" → FALLBACK (tipoFallback: "DESCUENTO")
 
-5. RECOMENDACION: Si pide sugerencias/recomendaciones de productos
-   - "qué me recomiendan?" → RECOMENDACION (sin término)
+5. RECOMENDACION: Si pide sugerencias/recomendaciones de productos (buscar por contexto)
+   - "qué me recomiendan?" → RECOMENDACION (terminoProducto: null)
    - "recomiéndame algo para regalo" → RECOMENDACION (término: "regalo")
-   - "no sé qué comprar" → RECOMENDACION
+   - "recomiéndame un producto para regalo" → RECOMENDACION (término: "regalo")
+   - "recomendaciones de regalos para oficina" → RECOMENDACION (término: "regalos oficina" o "regalo oficina")
+   - "recomiéndame regalos de oficina" → RECOMENDACION (término: "regalos oficina")
+   - "recomendaciones para premiaciones" / "recomiéndame algo para premiar" → RECOMENDACION (término: "premiación" o "trofeos" según contexto)
+   - "no sé qué comprar" → RECOMENDACION (sin término)
+   - Extrae SIEMPRE un término cuando el cliente lo indique (regalo, oficina, premiación, etc.) para que el backend busque productos relacionados.
    - EXCEPCIONES (no es recomendación de productos):
      - "talleres recomendados" → INFORMACION_GENERAL
      - "empresas recomendadas" → INFORMACION_GENERAL
@@ -364,8 +370,17 @@ REGLAS ESTRICTAS (CRÍTICO - EVITAR FALSOS POSITIVOS):
    - Empresa: "¿quiénes son?", "¿qué talleres recomiendan?"
    - Datos bancarios / transferencia: "¿a qué cuenta transfiero?", "datos para transferencia", "¿dónde deposito?", "cuenta para transferir", "datos bancarios", "RUT para transferencia"
    - NUNCA marques INFORMACION_GENERAL si pregunta por un producto (nombre, SKU, precio, stock).
+   - NUNCA marques PRODUCTO si el mensaje pide hablar con una persona, un ejecutivo, o hacer un reclamo/queja; usa RECLAMO o DERIVACION_HUMANO.
 
-7. AMBIGUA: Cuando el mensaje es genérico sin término específico
+7. RECLAMO: Si el cliente expresa queja, reclamo, molestia o insatisfacción (con o sin producto)
+   - "tengo una queja", "tegno una queja", "quiero reclamar", "estoy molesto", "pedido llegó incompleto", "me atendieron mal", "producto llegó malo", "no estoy conforme", "quiero quejarme"
+   - NUNCA marques PRODUCTO ni busques productos. El backend dará correo (ventas) para que escriban; NO se promete que un ejecutivo los contactará.
+
+8. DERIVACION_HUMANO: Si el cliente pide hablar con una persona, ejecutivo o humano (NO búsqueda de productos)
+   - "quiero hablar con una persona", "necesito hablar con alguien", "necesito que me llame un ejecutivo", "¿puedo hablar con un ejecutivo?", "atención humana", "que me llame alguien"
+   - NUNCA marques PRODUCTO ni busques productos. El backend dará correo y teléfonos para que el cliente contacte; NO se promete que un ejecutivo lo contactará.
+
+9. AMBIGUA: Cuando el mensaje es genérico sin término específico
    - "tienen un producto" → AMBIGUA
    - "hola tienen productos" → AMBIGUA
    - "necesito saber si tienen" → AMBIGUA
@@ -381,16 +396,16 @@ REGLAS ESTRICTAS (CRÍTICO - EVITAR FALSOS POSITIVOS):
    - Si el mensaje es un saludo genérico ("hola", "buenos días") → AMBIGUA (NO usar contexto)
    - Si el mensaje pregunta sobre OTRO producto específico ("tienen usb?", "tienen mochilas?") → AMBIGUA o PRODUCTO según el término (NO usar contexto anterior)
 
-8. Extracción de términos:
+10. Extracción de términos:
    - NO extraigas términos genéricos como "producto", "productos", "artículo"
    - Solo extrae nombres específicos: "mochila", "bolígrafo", "llavero"
    - Si el término es genérico, marca tipo: "AMBIGUA"
 
-9. SKU/ID: Solo si son explícitos y claros
+11. SKU/ID: Solo si son explícitos y claros
    - "K62", "L02", "601050020" → SKU válido
    - NO inventes SKUs que no estén en el mensaje
 
-10. CONSERVADOR: Si hay duda, marca AMBIGUA con necesitaMasInfo: true
+12. CONSERVADOR: Si hay duda, marca AMBIGUA con necesitaMasInfo: true
 
 Ejemplos:
 - "tienen mochilas?" → {"tipo":"PRODUCTO","terminoProducto":"mochila","sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta de producto con término específico"}
@@ -401,6 +416,8 @@ Ejemplos:
 - "¿Me hacen precio por volumen?" → {"tipo":"FALLBACK","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":"DESCUENTO","necesitaMasInfo":false,"razon":"Consulta sobre descuento, no disponible"}
 - "qué me recomiendan?" → {"tipo":"RECOMENDACION","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Solicitud de recomendaciones"}
 - "recomiéndame algo para regalo" → {"tipo":"RECOMENDACION","terminoProducto":"regalo","sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Solicitud de recomendaciones con contexto"}
+- "recomiéndame regalos de oficina" → {"tipo":"RECOMENDACION","terminoProducto":"regalos oficina","sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Recomendaciones para regalos de oficina"}
+- "recomendaciones para premiaciones" → {"tipo":"RECOMENDACION","terminoProducto":"premiacion","sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Recomendaciones para premiaciones"}
 - "necesito saber si tienen un producto" → {"tipo":"AMBIGUA","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":true,"razon":"Consulta genérica sin término de producto específico"}
 - "horarios de atención" → {"tipo":"INFORMACION_GENERAL","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta de información general"}
 - "¿dónde está ubicada la empresa?" → {"tipo":"INFORMACION_GENERAL","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta de ubicación/dirección"}
@@ -409,6 +426,9 @@ Ejemplos:
 - "¿dónde están ubicados?" → {"tipo":"INFORMACION_GENERAL","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta de ubicación"}
 - "¿a qué cuenta les transfiero?" → {"tipo":"INFORMACION_GENERAL","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta datos bancarios/transferencia"}
 - "datos para transferencia" → {"tipo":"INFORMACION_GENERAL","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Consulta datos bancarios"}
+- "tengo una queja" → {"tipo":"RECLAMO","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Cliente expresa queja"}
+- "quiero hablar con una persona" → {"tipo":"DERIVACION_HUMANO","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Cliente pide atención humana"}
+- "necesito que me llame un ejecutivo" → {"tipo":"DERIVACION_HUMANO","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Cliente pide contacto con humano"}
 
 Ejemplos CON CONTEXTO DE PRODUCTO:
 - Contexto: producto "Boligrafo Bamboo L39" (SKU: L39)
@@ -463,7 +483,7 @@ Respuesta (SOLO el JSON, sin explicaciones adicionales):`
       
       // VALIDACIONES ESTRICTAS para evitar falsos positivos
       // 1. Validar que el tipo sea uno de los permitidos
-      const tiposValidos = ['PRODUCTO', 'INFORMACION_GENERAL', 'AMBIGUA', 'VARIANTE', 'CARACTERISTICAS', 'FALLBACK', 'RECOMENDACION']
+      const tiposValidos = ['PRODUCTO', 'INFORMACION_GENERAL', 'AMBIGUA', 'VARIANTE', 'CARACTERISTICAS', 'FALLBACK', 'RECOMENDACION', 'RECLAMO', 'DERIVACION_HUMANO']
       if (!tiposValidos.includes(analisis.tipo)) {
         console.error(`[IA] ⚠️ Tipo inválido de OpenAI: "${analisis.tipo}" → Forzando AMBIGUA`)
         analisis.tipo = 'AMBIGUA'

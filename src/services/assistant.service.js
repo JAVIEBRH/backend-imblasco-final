@@ -188,8 +188,11 @@ function buildProductResponse(product, variations, productIndex) {
     ? variations.map(v => {
         const attrs = {};
         (v.attributes || []).forEach(attr => {
-          if (attr && attr.name && attr.option) {
-            attrs[attr.name.toLowerCase()] = attr.option;
+          if (attr && attr.name) {
+            const attrVal = (attr.option != null && attr.option !== '') ? attr.option : (attr.value != null ? attr.value : null)
+            if (attrVal) {
+              attrs[attr.name.toLowerCase()] = attrVal;
+            }
           }
         });
         return {

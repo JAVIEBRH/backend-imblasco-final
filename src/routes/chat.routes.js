@@ -12,6 +12,7 @@ import { Router } from 'express'
 import * as conversationService from '../services/conversation.service.js'
 import { handleChat } from '../services/assistant.service.js'
 import { saveChatMessage } from '../services/chat-logger.service.js'
+import { resolveChatAuth } from '../middleware/chat-auth.js'
 
 export const chatRouter = Router()
 
@@ -240,9 +241,11 @@ chatRouter.post('/reset/:userId', async (req, res, next) => {
  *   userId: string,
  *   message: string,  // Mensaje del usuario
  *   conversationHistory?: Array  // Historial opcional
+ *   token?: string               // Opcional: token de sesión (WordPress/JWT) para validar acceso a precios/stock
  * }
+ * Header: Authorization: Bearer <token> (alternativa a body.token)
  */
-chatRouter.post('/message', async (req, res, next) => {
+chatRouter.post('/message', resolveChatAuth, async (req, res, next) => {
   try {
     const { userId, message } = req.body
 
@@ -283,11 +286,13 @@ chatRouter.post('/message', async (req, res, next) => {
       }
     })
 
-    // Procesar mensaje con IA (el historial se obtiene de la sesión internamente)
+    // isLoggedIn viene del middleware resolveChatAuth (token WordPress a futuro; ahora env CHAT_AUTH_AS_LOGGED_IN)
+    const authOptions = { isLoggedIn: req.chatAuth?.isLoggedIn }
     try {
       const response = await conversationService.processMessageWithAI(
         threadId,
-        message.trim()
+        message.trim(),
+        authOptions
       )
 
       const botText = response?.botMessage ?? ''
@@ -327,9 +332,10 @@ chatRouter.post('/message', async (req, res, next) => {
 /**
  * POST /api/chat/message/stream
  * Igual que /message pero la respuesta del bot se envía por Server-Sent Events (streaming).
- * Body: { userId: string, message: string }
+ * Body: { userId: string, message: string, token?: string }
+ * Header: Authorization: Bearer <token> (opcional)
  */
-chatRouter.post('/message/stream', async (req, res, next) => {
+chatRouter.post('/message/stream', resolveChatAuth, async (req, res, next) => {
   try {
     const { userId, message } = req.body
 
@@ -398,11 +404,13 @@ chatRouter.post('/message/stream', async (req, res, next) => {
       }
     })
 
+    const authOptionsStream = { isLoggedIn: req.chatAuth?.isLoggedIn }
     try {
       const response = await conversationService.processMessageWithAI(
         threadId,
         message.trim(),
         {
+          ...authOptionsStream,
           stream: true,
           onChunk: (chunk) => {
             clearHeartbeat()

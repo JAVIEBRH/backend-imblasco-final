@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url';
 import { connect, disconnect } from '../config/database.js';
 import ProductIndex from '../models/ProductIndex.js';
 import { getAllProducts, getProductVariations } from '../services/wordpress.service.js';
+import { normalizeCode } from '../utils/normalization.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,11 +22,6 @@ dotenv.config({
   path: path.resolve(__dirname, '../../.env'),
   override: false
 });
-
-function normalizeCode(code) {
-  if (!code || typeof code !== 'string') return '';
-  return code.toUpperCase().replace(/[-.\s_]/g, '').trim();
-}
 
 async function runImport() {
   console.log('\n=== IMPORTADOR DE PRODUCTOS (WooCommerce -> MongoDB) ===\n');
