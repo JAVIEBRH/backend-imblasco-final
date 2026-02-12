@@ -28,6 +28,7 @@ import * as wordpressService from './wordpress.service.js'
 import * as companyInfoService from './company-info.service.js'
 import * as productMatcher from './product-matcher.service.js'
 import { getAttributeDisplayValue, buildAttributeOptionKey } from '../utils/attribute-value.js'
+import { formatPrecioParaCliente } from '../utils/formato.js'
 
 // Estados válidos
 export const STATES = {
@@ -77,6 +78,9 @@ const GENERIC_PHRASES_RAW = [
   'qué artículos tienen', 'que articulos tienen', 'qué tienen', 'que tienen'
 ]
 const GENERIC_PHRASES_SET = new Set(GENERIC_PHRASES_RAW.map(normalizeForGenericGate))
+
+/** Lista única de términos genéricos de producto (evita búsquedas vacías/ruido). Usada en userAsksForDifferentProduct, AMBIGUA, PRODUCTOS y fallback. */
+const TERMINOS_GENERICOS_PRODUCTO = ['producto', 'productos', 'articulo', 'articulos', 'artículo', 'artículos', 'item', 'items', 'cosa', 'cosas', 'objeto', 'objetos']
 
 /**
  * Mapa abreviatura/sinónimo → palabra canónica que puede aparecer en nombre del producto.
@@ -571,7 +575,7 @@ function isLunchHoursQuery(message) {
  * @returns {string}
  */
 function getLunchHoursResponse() {
-  return 'Atendemos de lunes a viernes de 9:42 a 14:00 y de 15:30 a 19:00 hrs. Los sábados de 10:00 a 13:00 hrs.\n\n⚠️ **IMPORTANTE: NO atendemos durante la hora de almuerzo (entre las 14:00 y 15:30 hrs).**';
+  return 'Atendemos de lunes a viernes de 9:42 a 14:00 y de 15:30 a 19:00 hrs. Los sábados de 10:00 a 13:00 hrs. No atendemos durante la hora de almuerzo (entre las 14:00 y 15:30 hrs).';
 }
 
 // Sesiones de usuarios (en memoria, solo para estado conversacional)
@@ -667,9 +671,8 @@ function userAsksForDifferentProduct(message, contextProduct, analisisOpenAI, pr
   }
 
   // Término de búsqueda que no coincide con el producto en contexto → pedir búsqueda real
-  const terminosGenericos = ['producto', 'productos', 'articulo', 'articulos', 'artículo', 'artículos', 'item', 'items', 'cosa', 'cosas', 'objeto', 'objetos']
   const term = (analisisOpenAI?.terminoProducto || extractProductTerm(message)).trim().toLowerCase()
-  if (!term || terminosGenericos.includes(term)) return false
+  if (!term || TERMINOS_GENERICOS_PRODUCTO.includes(term)) return false
 
   const termNorm = normalizeSearchText(term)
   const combiContexto = `${contextNameNorm} ${contextSkuNorm}`.trim()
@@ -687,7 +690,7 @@ function userAsksForDifferentProduct(message, contextProduct, analisisOpenAI, pr
   }
   // Filosofía: si el mensaje contiene un término de producto explícito (ej. "taza", "gorros") que NO está en el contexto, no usar contexto
   const termFromMessage = extractProductTerm(message).trim().toLowerCase()
-  if (termFromMessage && !terminosGenericos.includes(termFromMessage)) {
+  if (termFromMessage && !TERMINOS_GENERICOS_PRODUCTO.includes(termFromMessage)) {
     const termNormMsg = normalizeSearchText(termFromMessage)
     const inContextFromMsg = combiContexto.length > 0 && (combiContexto.includes(termNormMsg) || termNormMsg.split(/\s+/).every(p => combiContexto.includes(p)))
     if (!inContextFromMsg) {
@@ -855,7 +858,7 @@ function formatProductsList(products, options = {}) {
   return products.map((item, index) => {
     const p = item.product || item
     const stockInfo = formatStockInfo(p)
-    const baseInfo = `${index + startIndex}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''}${p.price ? ` - $${parseFloat(p.price).toLocaleString('es-CL')}` : ''} - Stock: ${stockInfo}`
+    const baseInfo = `${index + startIndex}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''} - ${formatPrecioParaCliente(p.price)} - Stock: ${stockInfo}`
     
     if (includeVariants && variantAttribute && variantValues) {
       const variantsStr = Array.isArray(variantValues) ? variantValues.join(', ') : variantValues
@@ -1729,25 +1732,28 @@ export async function processMessageWithAI(userId, message, options = {}) {
     // ============================================
     
     // Si es FALLBACK, responder directamente con mensaje fijo + contacto (unificado con derivación a humano)
-    if (queryType === 'FALLBACK' && analisisOpenAI?.tipoFallback) {
-      console.log(`[WooCommerce] ⚠️ Consulta de fallback detectada: ${analisisOpenAI.tipoFallback}`)
+    if (queryType === 'FALLBACK') {
       const contacto = companyInfoService.getCompanyInfo().contacto
       const lineaContacto = `Puedes escribir a ${contacto.email} o llamar al ${contacto.telefono}.`
-      let fallbackMessage = ''
-      switch (analisisOpenAI.tipoFallback) {
-        case 'FUTURO':
-          fallbackMessage = `No contamos con información de fechas de reposición.\n${lineaContacto}`
-          break
-        case 'RESERVA':
-          fallbackMessage = `Para reservas o compras puedes usar el sitio web o contactar a un ejecutivo.\n${lineaContacto}`
-          break
-        case 'DESCUENTO':
-          fallbackMessage = `Los precios son los publicados.\nPara condiciones comerciales: ${lineaContacto}`
-          break
-        default:
-          fallbackMessage = `Para esa consulta: ${lineaContacto}`
+      let fallbackMessage = `Para esa consulta: ${lineaContacto}`
+      if (analisisOpenAI?.tipoFallback) {
+        console.log(`[WooCommerce] ⚠️ Consulta de fallback detectada: ${analisisOpenAI.tipoFallback}`)
+        switch (analisisOpenAI.tipoFallback) {
+          case 'FUTURO':
+            fallbackMessage = `No contamos con información de fechas de reposición.\n${lineaContacto}`
+            break
+          case 'RESERVA':
+            fallbackMessage = `Para reservas o compras puedes usar el sitio web o contactar a un ejecutivo.\n${lineaContacto}`
+            break
+          case 'DESCUENTO':
+            fallbackMessage = `Los precios son los publicados.\nPara condiciones comerciales: ${lineaContacto}`
+            break
+          default:
+            fallbackMessage = `Para esa consulta: ${lineaContacto}`
+        }
+      } else {
+        console.log('[WooCommerce] Consulta de fallback sin tipoFallback, usando mensaje genérico con contacto')
       }
-      
       return createResponse(
         fallbackMessage,
         session.state,
@@ -1785,8 +1791,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
           const productoContextoParaVariante = session.currentProduct || context.currentProduct || productStockData
           if (userAsksForDifferentProduct(message, productoContextoParaVariante, analisisOpenAI, providedExplicitSku, providedExplicitId)) {
             const terminoParaBuscar = (analisisOpenAI?.terminoProducto || extractProductTerm(message)).trim()
-            const terminosGenericosAmb = ['producto', 'productos', 'articulo', 'articulos', 'artículo', 'artículos', 'item', 'items', 'cosa', 'cosas', 'objeto', 'objetos']
-            const termValido = terminoParaBuscar && terminoParaBuscar.length >= 2 && !terminosGenericosAmb.includes(terminoParaBuscar.toLowerCase()) && !palabrasVariaciones.includes(terminoParaBuscar.toLowerCase())
+            const termValido = terminoParaBuscar && terminoParaBuscar.length >= 2 && !TERMINOS_GENERICOS_PRODUCTO.includes(terminoParaBuscar.toLowerCase()) && !palabrasVariaciones.includes(terminoParaBuscar.toLowerCase())
             if (termValido) {
               queryType = 'PRODUCTOS'
               context.terminoProductoParaBuscar = terminoParaBuscar
@@ -1898,12 +1903,11 @@ export async function processMessageWithAI(userId, message, options = {}) {
       } else {
         // AMBIGUA sin palabras de variaciones: si hay término de producto no genérico → promover a PRODUCTOS y buscar
         const terminoAmb = (analisisOpenAI?.terminoProducto || extractProductTerm(message)).trim()
-        const terminosGenericosAmb2 = ['producto', 'productos', 'articulo', 'articulos', 'artículo', 'artículos', 'item', 'items', 'cosa', 'cosas', 'objeto', 'objetos']
         const palabrasSoloVariacion = ['color', 'colores', 'talla', 'tallas', 'tamaño', 'tamaños', 'variacion', 'variaciones', 'variante', 'variantes', 'modelo', 'modelos', 'acabado', 'acabados']
         // Fortificación: no promover a PRODUCTOS si el término extraído es saludo (evita "buenos días" → "bueno dia"/"as")
         const terminoEsSaludo = ['bueno', 'buenos', 'dias', 'días', 'tardes', 'noches', 'hola', 'buen', 'buenas', 'dia', 'día'].includes(terminoAmb.toLowerCase())
         const termValidoParaBuscar = terminoAmb && terminoAmb.length >= 2 &&
-          !terminosGenericosAmb2.includes(terminoAmb.toLowerCase()) &&
+          !TERMINOS_GENERICOS_PRODUCTO.includes(terminoAmb.toLowerCase()) &&
           !palabrasSoloVariacion.includes(terminoAmb.toLowerCase()) &&
           !terminoEsSaludo
         if (termValidoParaBuscar) {
@@ -1928,8 +1932,19 @@ export async function processMessageWithAI(userId, message, options = {}) {
       }
     }
     
+    // RECOMENDACION + no logueado: no buscar catálogo; indicar que necesita cuenta para recomendaciones.
+    if (queryType === 'RECOMENDACION' && !isLoggedIn) {
+      const info = companyInfoService.getCompanyInfo()
+      const paso1 = info.comoRealizarPedido?.paso1 || 'Puedes solicitarla en la sección de solicitud de cuenta de nuestra web.'
+      return createResponse(
+        `Para darte recomendaciones personalizadas (por categoría, regalos, oficina, etc.) necesitas tener una cuenta. ${paso1}`,
+        session.state,
+        null,
+        cart
+      )
+    }
     // Si es consulta de PRODUCTOS o RECOMENDACION y el usuario está logueado, buscar en WooCommerce.
-    // Si no está logueado, no se consulta catálogo; más abajo se arma texto "necesitas cuenta" (info sensible).
+    // Si no está logueado (y no es RECOMENDACION, ya manejado arriba), no se consulta catálogo.
     // VARIANTE tiene flujo propio y también se restringe por isLoggedIn en el bloque de textoParaIA.
     if ((queryType === 'PRODUCTOS' || queryType === 'RECOMENDACION') && isLoggedIn) {
       try {
@@ -1940,8 +1955,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
         let terminoProductoParaBuscar = context.terminoProductoParaBuscar || extractProductTerm(message)
         
         // VALIDACIÓN CRÍTICA: Verificar que el término no sea genérico antes de buscar
-        const terminosGenericos = ['producto', 'productos', 'articulo', 'articulos', 'artículo', 'artículos', 'item', 'items', 'cosa', 'cosas', 'objeto', 'objetos']
-        if (terminoProductoParaBuscar && terminosGenericos.includes(terminoProductoParaBuscar.toLowerCase().trim())) {
+        if (terminoProductoParaBuscar && TERMINOS_GENERICOS_PRODUCTO.includes(terminoProductoParaBuscar.toLowerCase().trim())) {
           console.log(`[WooCommerce] ⚠️ Término genérico detectado: "${terminoProductoParaBuscar}" → No se buscará para evitar falsos positivos`)
           terminoProductoParaBuscar = null
         }
@@ -2192,7 +2206,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
             context.productStockData = productStockData
             session.currentProduct = finalProduct // Guardar producto padre (o el producto si no es variación) para futuras referencias
             console.log(`[WooCommerce] ✅ Producto encontrado por SKU explícito: ${finalProduct.name || 'N/A'} (SKU: ${finalProduct.sku || 'N/A'})`)
-            console.log(`   Stock: ${finalProduct.stock_quantity !== null ? finalProduct.stock_quantity : 'N/A'}, Precio: ${finalProduct.price ? '$' + finalProduct.price : 'N/A'}`)
+            console.log(`   Stock: ${finalProduct.stock_quantity !== null ? finalProduct.stock_quantity : 'N/A'}, Precio: ${formatPrecioParaCliente(finalProduct.price)}`)
             
             // Si es un producto variable (y no es variación), cargar variaciones automáticamente
             if (finalProduct.type === 'variable' && finalProduct.id && !finalProduct.parent_id) {
@@ -2293,7 +2307,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
             context.productStockData = productStockData
             session.currentProduct = productById // Guardar para futuras referencias
             console.log(`[WooCommerce] ✅ Producto encontrado por ID explícito: ${productById.name || 'N/A'} (ID: ${productById.id || 'N/A'})`)
-            console.log(`   Stock: ${productById.stock_quantity !== null ? productById.stock_quantity : 'N/A'}, Precio: ${productById.price ? '$' + productById.price : 'N/A'}`)
+            console.log(`   Stock: ${productById.stock_quantity !== null ? productById.stock_quantity : 'N/A'}, Precio: ${formatPrecioParaCliente(productById.price)}`)
           } else {
             console.log(`[WooCommerce] ❌ No se encontró producto con ID explícito: "${providedExplicitId}"`)
           }
@@ -2432,7 +2446,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
                   context.productStockData = productStockData
                   session.currentProduct = productBySku
                   console.log(`[WooCommerce] ✅ Producto encontrado por SKU del nombre: ${productBySku.name || 'N/A'} (SKU: ${productBySku.sku || 'N/A'})`)
-                  console.log(`   Stock: ${productBySku.stock_quantity !== null ? productBySku.stock_quantity : 'N/A'}, Precio: ${productBySku.price ? '$' + productBySku.price : 'N/A'}`)
+                  console.log(`   Stock: ${productBySku.stock_quantity !== null ? productBySku.stock_quantity : 'N/A'}, Precio: ${formatPrecioParaCliente(productBySku.price)}`)
                 } else {
                   console.log(`[WooCommerce] ⚠️  No se encontró producto con SKU "${detectedSkuFromName}", buscando código en nombres/SKU...`)
                   // Fallback: buscar el código detectado en nombres/SKU normalizados
@@ -2485,8 +2499,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
               let productTerm = context.terminoProductoParaBuscar || extractProductTerm(messageWithoutSku)
               
               // VALIDACIÓN CRÍTICA: Verificar que el término no sea genérico
-              const terminosGenericos = ['producto', 'productos', 'articulo', 'articulos', 'artículo', 'artículos', 'item', 'items', 'cosa', 'cosas', 'objeto', 'objetos']
-              if (productTerm && terminosGenericos.includes(productTerm.toLowerCase().trim())) {
+              if (productTerm && TERMINOS_GENERICOS_PRODUCTO.includes(productTerm.toLowerCase().trim())) {
                 console.log(`[WooCommerce] ⚠️ Término genérico detectado: "${productTerm}" → No se buscará para evitar falsos positivos`)
                 productTerm = ''
               }
@@ -2752,6 +2765,20 @@ export async function processMessageWithAI(userId, message, options = {}) {
                   console.error(`[WooCommerce] ❌ Error en matching determinístico:`, error.message)
                   console.error(`   Stack:`, error.stack?.substring(0, 500))
                 }
+              } else if (queryType === 'RECOMENDACION') {
+                // RECOMENDACION sin término (ej. "qué me recomiendan?"): mostrar 5 productos de muestra por "regalo"
+                try {
+                  let sample = await wordpressService.searchProductsInWordPress('regalo', 20)
+                  if (!sample || sample.length === 0) sample = await wordpressService.getProductsSample(20)
+                  const list = (Array.isArray(sample) ? sample : []).slice(0, 5)
+                  if (list.length > 0) {
+                    productSearchResults = list
+                    context.productSearchResults = list
+                    console.log(`[WooCommerce] RECOMENDACION sin término: ${list.length} productos de muestra`)
+                  }
+                } catch (e) {
+                  console.warn('[WooCommerce] RECOMENDACION sin término:', e?.message)
+                }
               } else {
                 console.log(`[WooCommerce] ⚠️  No se pudo extraer término del producto del mensaje`)
               }
@@ -2773,15 +2800,14 @@ export async function processMessageWithAI(userId, message, options = {}) {
         // VALIDACIÓN ESTRICTA: Solo usar fallback si hay término específico y válido
         // 1. Hay un término extraído válido (más de 3 caracteres)
         // 2. El término no es genérico (no está en lista de términos genéricos)
-        const genericTerms = ['producto', 'productos', 'articulo', 'articulos', 'artículo', 'artículos', 'item', 'items', 'cosa', 'cosas', 'objeto', 'objetos']
-        const isGenericTerm = fallbackTerm && genericTerms.includes(fallbackTerm.toLowerCase().trim())
+        const isGenericTerm = fallbackTerm && TERMINOS_GENERICOS_PRODUCTO.includes(fallbackTerm.toLowerCase().trim())
         const hasValidTerm = fallbackTerm && fallbackTerm.trim().length >= 3 && !isGenericTerm
         
         // Validación adicional: si el término es muy corto o solo contiene palabras genéricas, no usar fallback
         let puedeUsarFallback = hasValidTerm
         if (fallbackTerm) {
           const palabras = fallbackTerm.toLowerCase().trim().split(/\s+/)
-          const todasGenericas = palabras.every(palabra => genericTerms.includes(palabra) || palabra.length < 3)
+          const todasGenericas = palabras.every(palabra => TERMINOS_GENERICOS_PRODUCTO.includes(palabra) || palabra.length < 3)
           if (todasGenericas) {
             console.log(`[WooCommerce] ⚠️ Término del fallback contiene solo palabras genéricas: "${fallbackTerm}" → No se usará fallback`)
             puedeUsarFallback = false
@@ -3445,9 +3471,7 @@ Informa al cliente de forma empática que no se encontró el producto.
             stockInfo = 'N/A'
           }
           
-          const priceInfo = validarDatoNumerico(productStockData.price) 
-            ? `$${parseFloat(productStockData.price).toLocaleString('es-CL')}` 
-            : 'N/A'
+          const priceInfo = formatPrecioParaCliente(productStockData.price)
           
           const atributo = context.variantesDisponibles.atributo || 'atributo'
           const valores = context.variantesDisponibles.valores
@@ -3513,7 +3537,7 @@ INFORMACIÓN REAL DEL PRODUCTO (consultada desde WooCommerce en tiempo real):
 ${productStockData.sku ? `- SKU: ${productStockData.sku}` : ''}
 - ${atributo.charAt(0).toUpperCase() + atributo.slice(1)}: ${valorAtributo}
 - Stock: ${stockInfo}
-${productStockData.price ? `- Precio: $${parseFloat(productStockData.price).toLocaleString('es-CL')}` : ''}
+- Precio: ${formatPrecioParaCliente(productStockData.price)}
 
 El cliente preguntó: "${message}"
 
@@ -3667,9 +3691,7 @@ INSTRUCCIONES OBLIGATORIAS:
           stockInfo = 'Stock agotado (0 unidades)'
         }
         
-        const priceInfo = productStockData.price 
-          ? `$${parseFloat(productStockData.price).toLocaleString('es-CL')}` 
-          : 'Precio no disponible'
+        const priceInfo = formatPrecioParaCliente(productStockData.price)
         
         // Si es una variación, incluir información del producto padre
         const parentInfo = isVariation && productStockData.parent_product 
@@ -3692,7 +3714,7 @@ INSTRUCCIONES OBLIGATORIAS:
             const otros = (relacionados || []).filter(p => p.id !== productStockData.id)
             if (otros.length > 0) {
               productosSimilaresParaLista = otros.slice(0, 5)
-              const listaRelacionados = productosSimilaresParaLista.map(p => `${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''}${p.price != null ? ` - $${Number(p.price).toLocaleString('es-CL')}` : ''}`).join('; ')
+              const listaRelacionados = productosSimilaresParaLista.map(p => `${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''} - ${formatPrecioParaCliente(p.price)}`).join('; ')
               extraProductInfo += '\n- Productos relacionados (mismo tag): ' + listaRelacionados + '.'
             }
           } catch (e) {
@@ -3726,7 +3748,7 @@ INSTRUCCIONES OBLIGATORIAS:
             const vStock = v.stock_quantity != null
               ? `${vQty} unidad${vQty !== 1 ? 'es' : ''}`
               : v.stock_status === 'instock' ? 'disponible' : 'sin stock'
-            const vPrice = v.price ? `$${parseFloat(v.price).toLocaleString('es-CL')}` : 'Precio N/A'
+            const vPrice = formatPrecioParaCliente(v.price)
             return `  - ${label}${v.sku ? ` (SKU: ${v.sku})` : ''} - ${vStock} - ${vPrice}`
           })
           const anyVariationLooksLikeColor = context.productVariations.slice(0, 5).some(v => getVariationDisplayLabel(v, optionDisplayNamesMap).isLikelyColor)
@@ -3776,7 +3798,7 @@ INSTRUCCIONES OBLIGATORIAS:
           // Respuesta tipo lista: productos similares (no ficha de un solo producto)
           const listaSimilares = productosSimilaresParaLista.map((p, i) => {
             const stockTxt = p.stock_quantity != null ? `${p.stock_quantity} unidades` : 'consultar stock'
-            return `${i + 1}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''} - Stock: ${stockTxt} - Precio: ${p.price != null ? '$' + Number(p.price).toLocaleString('es-CL') : 'N/A'}`
+            return `${i + 1}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''} - Stock: ${stockTxt} - Precio: ${formatPrecioParaCliente(p.price)}`
           }).join('\n')
           textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
 
@@ -3876,7 +3898,7 @@ INSTRUCCIONES OBLIGATORIAS:
           const stockByProductId = await enrichStockForListProducts(sliceForList)
           const productsList = sliceForList.map((p, index) => {
             const stockInfo = getStockTextForListProduct(p, stockByProductId)
-            return `${index + 1}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''}${p.price != null ? ` - $${Number(p.price).toLocaleString('es-CL')}` : ''} - Stock: ${stockInfo}`
+            return `${index + 1}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''} - ${formatPrecioParaCliente(p.price)} - Stock: ${stockInfo}`
           }).join('\n')
           
           // Obtener historial reciente para contexto
@@ -3967,7 +3989,7 @@ INSTRUCCIONES OBLIGATORIAS:
               const stockByProductId = await enrichStockForListProducts(sliceForList)
               const productsList = sliceForList.map((p, index) => {
                 const stockInfo = getStockTextForListProduct(p, stockByProductId)
-                const priceInfo = p.price ? `$${parseFloat(p.price).toLocaleString('es-CL')}` : 'Precio no disponible'
+                const priceInfo = formatPrecioParaCliente(p.price)
                 return `${index + 1}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''} - Stock: ${stockInfo} - Precio: ${priceInfo}`
               }).join('\n')
               
@@ -4031,11 +4053,14 @@ INSTRUCCIONES OBLIGATORIAS:
     
     } else {
       // Otra consulta (queryType no es INFORMACION_GENERAL, PRODUCTOS, VARIANTE ni FALLBACK)
-      // Esto solo debería ocurrir si queryType es 'OTRO' o un valor inesperado
-      // Por seguridad, tratarlo como consulta genérica
+      // Por seguridad, tratarlo como consulta genérica e incluir siempre línea de contacto
+      const contacto = companyInfoService.getCompanyInfo().contacto
+      const lineaContacto = `Puedes escribir a ${contacto.email} o llamar al ${contacto.telefono}.`
       textoParaIA = `Redacta una respuesta clara y profesional en español chileno para la siguiente consulta del cliente: "${message}".
 
-Responde de forma breve (máximo 3-4 líneas), profesional y cercana, estilo WhatsApp.`
+Responde de forma breve (máximo 3-4 líneas), profesional y cercana, estilo WhatsApp.
+
+IMPORTANTE: Incluye al final de tu respuesta la siguiente línea de contacto para que el cliente sepa a quién escribir o llamar: "${lineaContacto}"`
     } // Cierra el if (queryType === 'INFORMACION_GENERAL') / else if (queryType === 'VARIANTE') / else if (queryType === 'PRODUCTOS' || 'RECOMENDACION') / else
     
     // Fortificación: si la consulta era mixta (info general + producto), incluir info empresa al inicio de la respuesta

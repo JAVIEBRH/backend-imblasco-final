@@ -172,8 +172,7 @@ HORARIO DE ATENCIÓN
 ${info.horarios.semana}
 ${info.horarios.sabado}
 
-⚠️ IMPORTANTE: NO se atiende durante la hora de almuerzo (entre las 14:00 y 15:30 hrs).
-Si alguien pregunta sobre atención durante la hora de almuerzo, debes responder claramente que NO se atiende en ese horario.
+No se atiende durante la hora de almuerzo (entre las 14:00 y 15:30 hrs). Si alguien pregunta por atención en ese horario, responde claramente que no atendemos entre 14:00 y 15:30 hrs.
 
 DESPACHOS
 Regiones:
