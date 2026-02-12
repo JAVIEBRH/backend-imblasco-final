@@ -6,6 +6,7 @@
 
 import { normalizeCode } from '../utils/normalization.js'
 import { withTimeout, withRetry } from '../utils/resilience.js'
+import { buildAttributeOptionKey } from '../utils/attribute-value.js'
 import { logEvent } from '../utils/structured-logger.js'
 
 // Función helper para obtener variables de entorno (carga lazy)
@@ -38,6 +39,115 @@ function parseStockQuantity(val) {
   const n = Number(val)
   if (!Number.isFinite(n) || n < 0) return 0
   return Math.floor(n)
+}
+
+/** Normaliza dimensiones de la API (length, width, height strings). Devuelve null si no hay ninguna. */
+function parseDimensions(dim) {
+  if (!dim || typeof dim !== 'object') return null
+  const length = dim.length != null ? String(dim.length).trim() : ''
+  const width = dim.width != null ? String(dim.width).trim() : ''
+  const height = dim.height != null ? String(dim.height).trim() : ''
+  if (!length && !width && !height) return null
+  return { length: length || null, width: width || null, height: height || null }
+}
+
+/** Normaliza tags de la API. Devuelve array de { id, name, slug }. */
+function parseTags(tags) {
+  if (!Array.isArray(tags)) return []
+  return tags.filter(t => t && (t.id != null || t.name)).map(t => ({
+    id: t.id != null ? t.id : null,
+    name: t.name != null ? String(t.name).trim() : '',
+    slug: t.slug != null ? String(t.slug).trim() : ''
+  }))
+}
+
+// Cache in-memory para atributos y términos (evitar llamadas repetidas a la API)
+let _attributesCache = null
+const _termsCacheByAttrId = new Map()
+
+/**
+ * Lista de atributos globales de WooCommerce (id, name, slug). Slug suele ser pa_tamaño, pa_talla, etc.
+ * @returns {Promise<Array<{id: number, name: string, slug: string}>>}
+ */
+async function getProductAttributes() {
+  if (_attributesCache) return _attributesCache
+  try {
+    const data = await wcRequest('products/attributes')
+    const list = Array.isArray(data) ? data : (data?.product_attributes || [])
+    _attributesCache = list.map(a => ({
+      id: a.id,
+      name: a.name != null ? String(a.name).trim() : '',
+      slug: (a.slug != null ? String(a.slug).trim() : '').toLowerCase()
+    }))
+    return _attributesCache
+  } catch (e) {
+    console.warn('[WooCommerce] No se pudieron cargar atributos:', e?.message)
+    return []
+  }
+}
+
+/**
+ * Términos de un atributo (slug → name para mostrar, ej. "21" → "21 cm").
+ * @param {number} attributeId
+ * @returns {Promise<Array<{slug: string, name: string}>>}
+ */
+async function getProductAttributeTerms(attributeId) {
+  if (!attributeId) return []
+  if (_termsCacheByAttrId.has(attributeId)) return _termsCacheByAttrId.get(attributeId)
+  try {
+    const data = await wcRequest(`products/attributes/${attributeId}/terms`)
+    const list = Array.isArray(data) ? data : (data?.product_attribute_terms || [])
+    const terms = list.map(t => ({
+      slug: (t.slug != null ? String(t.slug).trim() : '').toLowerCase(),
+      name: t.name != null ? String(t.name).trim() : ''
+    }))
+    _termsCacheByAttrId.set(attributeId, terms)
+    return terms
+  } catch (e) {
+    console.warn(`[WooCommerce] No se pudieron cargar términos del atributo ${attributeId}:`, e?.message)
+    return []
+  }
+}
+
+/**
+ * Resuelve los valores de atributos de variaciones (slug → nombre para mostrar).
+ * Usa la API de atributos y términos para mostrar "21 cm", "XL", etc. en lugar del slug "21", "xl".
+ * @param {Array} variations - Array de variaciones con attributes: [{ name, option }]
+ * @returns {Promise<Map<string, string>>} Map clave `${attrName.toLowerCase()}|${optionSlug}` → nombre para mostrar
+ */
+export async function resolveAttributeOptionDisplayNames(variations) {
+  const map = new Map()
+  if (!Array.isArray(variations) || variations.length === 0) return map
+  const attrSlugs = new Set()
+  const pairs = []
+  for (const v of variations) {
+    if (!v?.attributes || !Array.isArray(v.attributes)) continue
+    for (const attr of v.attributes) {
+      const name = (attr.name || '').trim()
+      const option = (attr.option != null && attr.option !== '') ? String(attr.option).trim() : (attr.value != null ? String(attr.value).trim() : '')
+      if (!name || !option) continue
+      attrSlugs.add(name.toLowerCase())
+      pairs.push({ name, option })
+    }
+  }
+  if (attrSlugs.size === 0) return map
+  const attributes = await getProductAttributes()
+  const logAttributes = process.env.LOG_WOO_ATTRIBUTES === '1'
+  for (const slug of attrSlugs) {
+    const attr = attributes.find(a => a.slug === slug || a.slug === slug.replace(/^pa_/, '') || (slug.startsWith('pa_') && a.slug === slug.slice(3)))
+    if (!attr?.id) continue
+    const terms = await getProductAttributeTerms(attr.id)
+    if (logAttributes && terms.length > 0) {
+      const termList = terms.map(t => `${t.slug}→"${t.name}"`).join(', ')
+      console.log(`[WooCommerce] Atributo "${slug}" (id ${attr.id}): términos ${terms.length} → ${termList}`)
+    }
+    for (const t of terms) {
+      if (!t.slug || t.name === '') continue
+      const key = buildAttributeOptionKey(slug, t.slug)
+      map.set(key, t.name)
+    }
+  }
+  return map
 }
 
 // Autenticación básica HTTP para WooCommerce REST API
@@ -171,7 +281,10 @@ export async function getProductStock(identifier) {
       description: product.description || '',
       short_description: product.short_description || '',
       attributes: product.attributes || [],
-      categories: product.categories || []
+      categories: product.categories || [],
+      weight: product.weight != null ? String(product.weight).trim() || null : null,
+      dimensions: parseDimensions(product.dimensions),
+      tags: parseTags(product.tags)
     }
   } catch (error) {
     console.error('Error obteniendo stock del producto:', error.message)
@@ -268,7 +381,10 @@ export async function getAllProducts() {
       stock_status: product.stock_status || 'unknown',
       manage_stock: product.manage_stock || false,
       available: product.stock_status === 'instock' || (product.stock_quantity != null && parseStockQuantity(product.stock_quantity) > 0),
-      type: product.type || 'simple' // Agregar tipo de producto (simple, variable, etc.)
+      type: product.type || 'simple',
+      weight: product.weight != null ? String(product.weight).trim() || null : null,
+      dimensions: parseDimensions(product.dimensions),
+      tags: parseTags(product.tags)
     }))
   } catch (error) {
     console.error('Error obteniendo todos los productos:', error.message)
@@ -306,7 +422,10 @@ export async function searchProductsInWordPress(searchTerm, limit = 10) {
       description: product.description || '',
       short_description: product.short_description || '',
       attributes: product.attributes || [],
-      categories: product.categories || []
+      categories: product.categories || [],
+      weight: product.weight != null ? String(product.weight).trim() || null : null,
+      dimensions: parseDimensions(product.dimensions),
+      tags: parseTags(product.tags)
     }))
   } catch (error) {
     console.error('Error buscando productos:', error.message)
@@ -423,7 +542,10 @@ export async function getProductById(productId) {
       short_description: product.short_description || '',
       attributes: product.attributes || [],
       categories: product.categories || [],
-      parent_id: product.parent_id || product.parent || null
+      parent_id: product.parent_id || product.parent || null,
+      weight: product.weight != null ? String(product.weight).trim() || null : null,
+      dimensions: parseDimensions(product.dimensions),
+      tags: parseTags(product.tags)
     }
   } catch (error) {
     console.error(`[WooCommerce] Error obteniendo producto por ID ${productId}:`, error.message)
@@ -492,8 +614,11 @@ export async function getProductVariations(productId) {
       stock_status: variation.stock_status || 'unknown',
       manage_stock: variation.manage_stock || false,
       available: variation.stock_status === 'instock' || (variation.stock_quantity != null && parseStockQuantity(variation.stock_quantity) > 0),
-      attributes: variation.attributes || [], // Array de objetos con {id, name, option}
-      parent_id: productId
+      attributes: variation.attributes || [],
+      parent_id: productId,
+      description: variation.description != null ? String(variation.description).trim() || null : null,
+      weight: variation.weight != null ? String(variation.weight).trim() || null : null,
+      dimensions: parseDimensions(variation.dimensions)
     }))
   } catch (error) {
     console.error(`[WooCommerce] ❌ Error obteniendo variaciones del producto ${productId}:`, error.message)
@@ -576,6 +701,38 @@ export async function findVariationBySku(sku, variableProducts) {
 }
 
 /**
+ * Obtener productos que tengan alguno de los tags indicados (por ID).
+ * Útil para "productos similares" cuando el producto actual tiene tags.
+ * @param {number[]} tagIds - IDs de tags en WooCommerce
+ * @param {number} limit - Máximo de productos a devolver (default 10)
+ * @returns {Promise<Array>} Lista de productos con al menos uno de esos tags
+ */
+export async function getProductsByTag(tagIds, limit = 10) {
+  try {
+    if (!Array.isArray(tagIds) || tagIds.length === 0) return []
+    const ids = tagIds.filter(id => id != null && Number.isFinite(Number(id))).map(Number)
+    if (ids.length === 0) return []
+    const products = await wcRequest(`products?tag=${ids.join(',')}&per_page=${limit}&status=publish`)
+    if (!Array.isArray(products)) return []
+    return products.map(product => ({
+      id: product.id,
+      name: product.name || '',
+      sku: product.sku || '',
+      price: product.price ? parseFloat(product.price) : null,
+      stock_quantity: product.stock_quantity != null ? parseStockQuantity(product.stock_quantity) : null,
+      stock_status: product.stock_status || 'unknown',
+      type: product.type || 'simple',
+      weight: product.weight != null ? String(product.weight).trim() || null : null,
+      dimensions: parseDimensions(product.dimensions),
+      tags: parseTags(product.tags)
+    }))
+  } catch (error) {
+    console.error('[WooCommerce] Error obteniendo productos por tag:', error.message)
+    return []
+  }
+}
+
+/**
  * Verificar si el servicio está configurado
  * @returns {boolean}
  */
@@ -593,6 +750,7 @@ export default {
   getProductsSample,
   getAllProducts,
   getProductVariations,
+  getProductsByTag,
   findVariationBySku,
   isWordPressConfigured
 }

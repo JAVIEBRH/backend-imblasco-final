@@ -60,6 +60,7 @@ export const COMPANY_INFO = {
   },
   datosBancarios: {
     rut: "76.274.594-1",
+    nombreEmpresa: "Importadora Blas y Cía. Ltda.",
     tipoCuenta: "Cuenta Corriente",
     cuentas: [
       { banco: "SANTANDER", numero: "06-699 114-8" },
@@ -88,6 +89,56 @@ export const COMPANY_INFO = {
  */
 export function getCompanyInfo() {
   return COMPANY_INFO;
+}
+
+/**
+ * Mensaje normalizado de datos bancarios para el cliente.
+ * - Etiquetas en negrita con ** (RUT:, Tipo de cuenta:, Cuentas disponibles:, nombre del banco).
+ * - Sin guiones separadores (----); separación por líneas en blanco.
+ * - Incluye intro y cierre (pago previo, ofrecer más info).
+ * @returns {string}
+ */
+export function getDatosBancariosMensajeCliente() {
+  const d = COMPANY_INFO.datosBancarios
+  const nombreEmpresa = d.nombreEmpresa || COMPANY_INFO.nombre
+  const lineas = [
+    'Para realizar la transferencia, puedes utilizar los siguientes datos bancarios:',
+    '',
+    `**RUT:** ${d.rut} — ${nombreEmpresa}`,
+    `**Tipo de cuenta:** ${d.tipoCuenta}`,
+    '',
+    '**Cuentas disponibles:**',
+    ...d.cuentas.map(c => `- **${c.banco}:** ${c.numero}`),
+    '',
+    'Recuerda que el pago debe ser previo a la entrega de tu pedido. Si necesitas más información, no dudes en preguntar.'
+  ]
+  return lineas.join('\n')
+}
+
+/**
+ * Mensaje normalizado de garantía y devoluciones para el cliente.
+ * Misma lineación que datos bancarios (saltos de línea, sin guiones), sin asteriscos.
+ * @returns {string}
+ */
+export function getGarantiaDevolucionMensajeCliente() {
+  const g = COMPANY_INFO.garantia
+  const d = COMPANY_INFO.derechoRetracto
+  const lineas = [
+    'Para devoluciones, ten en cuenta lo siguiente:',
+    '',
+    'GARANTÍA:',
+    `- Productos nuevos: ${g.productosNuevos}.`,
+    `- Perecibles o de uso breve: ${g.pereciblesUsoBreve}.`,
+    `- Necesitas el comprobante de compra y el producto debe entregarse para revisión técnica.`,
+    '',
+    'DERECHO A RETRACTO:',
+    `- ${d.aplica}.`,
+    `- Los costos de envío son a cargo del consumidor.`,
+    `- ${d.noAplica}.`,
+    '',
+    'Si necesitas más información, no dudes en preguntar.'
+  ]
+  return lineas.join('\n')
 }
 
 /**
@@ -144,21 +195,15 @@ RETIRO DE PEDIDOS
 - ${info.retiroPedidos.documentos}
 - ${info.retiroPedidos.sinFacturar}
 
-DATOS BANCARIOS PARA TRANSFERENCIA/DEPOSITO
-RUT: ${info.datosBancarios.rut}
-Tipo de cuenta: ${info.datosBancarios.tipoCuenta}
-Cuentas disponibles:
-${info.datosBancarios.cuentas.map(c => `- ${c.banco}: ${c.numero}`).join('\n')}
+DATOS BANCARIOS PARA TRANSFERENCIA/DEPÓSITO
+Cuando pregunten por transferencia, datos bancarios, cuenta para depositar o RUT, responde usando EXACTAMENTE este formato (etiquetas en **negrita**, sin guiones separadores, con intro y cierre):
 
-GARANTÍA LEGAL
-- Productos nuevos: ${info.garantia.productosNuevos}
-- Perecibles o uso breve: ${info.garantia.pereciblesUsoBreve}
-- ${info.garantia.requisitos}
+${getDatosBancariosMensajeCliente()}
 
-DERECHO A RETRACTO
-${info.derechoRetracto.aplica}
-${info.derechoRetracto.costos}
-${info.derechoRetracto.noAplica}
+GARANTÍA Y DEVOLUCIONES
+Cuando pregunten por devolución, garantía, retracto o "quiero devolver un producto", responde usando EXACTAMENTE este formato (sin asteriscos, sin guiones separadores, con intro y cierre):
+
+${getGarantiaDevolucionMensajeCliente()}
 
 CONTACTO
 Correo: ${info.contacto.email}
@@ -169,5 +214,7 @@ Teléfonos: ${info.contacto.telefono}
 export default {
   COMPANY_INFO,
   getCompanyInfo,
+  getDatosBancariosMensajeCliente,
+  getGarantiaDevolucionMensajeCliente,
   formatCompanyInfoForAgent,
 };

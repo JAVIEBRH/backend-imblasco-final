@@ -27,6 +27,7 @@ import * as conkavoAI from './conkavo-ai.service.js'
 import * as wordpressService from './wordpress.service.js'
 import * as companyInfoService from './company-info.service.js'
 import * as productMatcher from './product-matcher.service.js'
+import { getAttributeDisplayValue, buildAttributeOptionKey } from '../utils/attribute-value.js'
 
 // Estados válidos
 export const STATES = {
@@ -351,6 +352,15 @@ function stripLeadingGreeting(msg) {
     .replace(/^(hola|hi|hello|hey|buenos\s+d[ií]as|buenas\s+tardes|buenas\s+noches|buen\s+d[ií]a|saludos)[\s.!?¡¿,]*/gi, '')
     .trim()
   return withoutGreeting.length > 0 ? withoutGreeting : trimmed
+}
+
+/** Quitar etiquetas HTML y normalizar espacios (para descripción de producto). */
+function stripHtml(text) {
+  if (!text || typeof text !== 'string') return ''
+  return text
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 /** Detección temprana: pide hablar con una persona/ejecutivo (evitar tratarlo como búsqueda). */
@@ -780,6 +790,38 @@ async function enrichStockForListProducts(productListSlice) {
     console.error('[WooCommerce] Error en enriquecimiento de stock para lista:', err?.message)
   }
   return stockByProductId
+}
+
+/**
+ * Etiqueta legible para una variación. Solo muestra atributo:valor cuando tenemos nombre para mostrar
+ * (mapa de términos de WooCommerce). Sin mapa/traducción no mostramos el valor para no confundir (ej. "Tamaño: 21").
+ * @param {Object} v - Objeto variación con attributes: [{ id, name, option }]
+ * @param {Map<string, string>} [optionDisplayNamesMap] - Map clave `${attr.name}|${option}` → nombre para mostrar
+ * @returns {{ label: string, isLikelyColor: boolean }}
+ */
+function getVariationDisplayLabel(v, optionDisplayNamesMap = null) {
+  const defaultOut = { label: (v && v.name) ? String(v.name).trim() : '', isLikelyColor: false }
+  if (!v || !Array.isArray(v.attributes) || v.attributes.length === 0) return defaultOut
+  const parts = []
+  let isLikelyColor = false
+  for (const attr of v.attributes) {
+    const rawValue = getAttributeDisplayValue(attr)
+    if (!rawValue) continue
+    const key = optionDisplayNamesMap ? buildAttributeOptionKey(attr.name, rawValue) : null
+    const displayName = key && optionDisplayNamesMap?.get(key)
+    // Solo mostrar atributo si tenemos nombre para mostrar (mapa); sin traducción no mostrarlo
+    if (optionDisplayNamesMap != null && !displayName) continue
+    const value = displayName ?? rawValue
+    const attrName = (attr.name || '').replace(/^pa_/, '').trim()
+    const attrLabel = attrName ? attrName.charAt(0).toUpperCase() + attrName.slice(1) : 'Opción'
+    parts.push(`${attrLabel}: ${value}`)
+    const nameLower = attrName.toLowerCase()
+    const valueLower = value.toLowerCase()
+    const looksLikeColor = /^(color|colour)$/.test(nameLower) && /^[a-záéíóúñ\s]+$/i.test(valueLower) && value.length > 2
+    if (looksLikeColor) isLikelyColor = true
+  }
+  const label = parts.length > 0 ? parts.join(' · ') : defaultOut.label
+  return { label: label || defaultOut.label, isLikelyColor }
 }
 
 /**
@@ -1509,6 +1551,15 @@ export async function processMessageWithAI(userId, message, options = {}) {
                    analisisOpenAI.tipo === 'RECOMENDACION' ? 'RECOMENDACION' :
                    'AMBIGUA'
         
+        // Punto 1: Unificar "más detalles/características" en PRODUCTOS (backend decide; un solo flujo)
+        if (queryType === 'CARACTERISTICAS') {
+          queryType = 'PRODUCTOS'
+          if (analisisOpenAI) {
+            analisisOpenAI.tipo = 'PRODUCTO'
+          }
+          console.log(`[WooCommerce] 🔄 CARACTERISTICAS → PRODUCTOS (unificado: más detalles por backend)`)
+        }
+        
         console.log(`[WooCommerce] 🤖 OpenAI decidió: tipo=${queryType}, término=${analisisOpenAI.terminoProducto || 'N/A'}, SKU=${analisisOpenAI.sku || 'N/A'}, ID=${analisisOpenAI.id || 'N/A'}, necesitaMásInfo=${analisisOpenAI.necesitaMasInfo}`)
         
         // No usar SKU/ID del contexto si el mensaje actual NO los menciona (evita "bamboo" → responder con Llavero anterior)
@@ -1629,6 +1680,28 @@ export async function processMessageWithAI(userId, message, options = {}) {
         console.log(`[WooCommerce] 🔄 Reclasificado a PRODUCTOS (SKU/ID o patrón SKU en mensaje)`)
       }
       // Ya no reclasificamos INFORMACION_GENERAL/FALLBACK por "término" ni listas de palabras: confiamos en la IA.
+    }
+    
+    // Punto 5: Si pide explícitamente colores/tallas/tamaños de un producto, forzar VARIANTE (respuesta enfocada)
+    const msgNormAttr = (typeof message === 'string' ? message : '').trim().toLowerCase()
+    const pideAtributoExplicito = /\b(qu[eé]\s+(colores|tallas|tamaños|variaciones)\s+tiene|qu[eé]\s+(color|talla|tamaño)\s+tiene)\b/i.test(msgNormAttr) ||
+      /\b(colores|tallas|tamaños|variaciones)\s+(del|de)\s+/i.test(msgNormAttr)
+    if ((queryType === 'PRODUCTOS' || queryType === 'RECOMENDACION') && pideAtributoExplicito) {
+      let atributoForzado = null
+      if (/colores?/i.test(msgNormAttr)) atributoForzado = 'color'
+      else if (/tallas?/i.test(msgNormAttr)) atributoForzado = 'talla'
+      else if (/tamaños?/i.test(msgNormAttr)) atributoForzado = 'tamaño'
+      if (atributoForzado) {
+        queryType = 'VARIANTE'
+        if (analisisOpenAI) {
+          analisisOpenAI.tipo = 'VARIANTE'
+          analisisOpenAI.atributo = atributoForzado
+        }
+        const terminoVariante = (analisisOpenAI?.terminoProducto || extractProductTerm(message)).trim() || null
+        if (terminoVariante) context.terminoProductoParaBuscar = terminoVariante
+        context.queryType = queryType
+        console.log(`[WooCommerce] 🔄 PRODUCTOS → VARIANTE (mensaje pide atributo "${atributoForzado}")`)
+      }
     }
     
     // ============================================
@@ -1877,11 +1950,22 @@ export async function processMessageWithAI(userId, message, options = {}) {
         
         // Si no hay SKUs detectados por nombre de producto, buscar SKUs standalone
         if (detectedSkus.length === 0) {
-          // Buscar SKU standalone con letra (ej: "N35", "L88")
-          const standaloneSkuMatch = message.match(/\b([A-Za-z]\d+[A-Za-z]?[-]?\d*)\b/i)
-          if (standaloneSkuMatch && isVeryShortMessage) {
-            detectedSkus.push(standaloneSkuMatch[1].trim())
-            console.log(`[WooCommerce] 🔍 SKU detectado (standalone): "${standaloneSkuMatch[1]}"`)
+          // Buscar SKU tipo "mp040", "mp-040", "rp-8424", "sub15" (letras + opcional guión/punto/espacio + dígitos)
+          const multiLetterDigitMatch = message.match(/\b([A-Za-z]{2,}[-.\s]?\d+[A-Za-z0-9\-.]*)\b/i)
+          if (multiLetterDigitMatch && isVeryShortMessage) {
+            const candidate = multiLetterDigitMatch[1].trim()
+            if (candidate.length >= 3 && candidate.length <= 20) {
+              detectedSkus.push(candidate)
+              console.log(`[WooCommerce] 🔍 SKU detectado (varias letras + dígitos): "${candidate}"`)
+            }
+          }
+          // Buscar SKU standalone con una letra + dígitos (ej: "N35", "L88")
+          if (detectedSkus.length === 0) {
+            const standaloneSkuMatch = message.match(/\b([A-Za-z]\d+[A-Za-z]?[-]?\d*)\b/i)
+            if (standaloneSkuMatch && isVeryShortMessage) {
+              detectedSkus.push(standaloneSkuMatch[1].trim())
+              console.log(`[WooCommerce] 🔍 SKU detectado (standalone): "${standaloneSkuMatch[1]}"`)
+            }
           }
           
           // Buscar SKU solo con letras (ej: "Gal", "ABA1") cuando el mensaje es muy corto
@@ -2777,10 +2861,11 @@ export async function processMessageWithAI(userId, message, options = {}) {
           // Si el producto no tiene el atributo (ej: L39 no tiene "talla", solo tiene "color"),
           // limpiar contexto y pedir producto específico
           if (analisisOpenAI?.atributo && productoContexto.attributes && Array.isArray(productoContexto.attributes)) {
+            const atributoSolicitado = (analisisOpenAI.atributo || '').toLowerCase().trim()
             const tieneAtributo = productoContexto.attributes.some(attr => {
               const attrName = (attr.name || '').toLowerCase().trim()
-              const atributoSolicitado = (analisisOpenAI.atributo || '').toLowerCase().trim()
-              return attrName === atributoSolicitado
+              const attrNorm = attrName.replace(/^pa_/, '')
+              return attrName === atributoSolicitado || attrNorm === atributoSolicitado || (atributoSolicitado.length >= 2 && attrNorm.includes(atributoSolicitado))
             })
             
             if (!tieneAtributo) {
@@ -3103,56 +3188,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
     }
   }
   
-  // Si es CARACTERISTICAS, preparar información de características
-  if (queryType === 'CARACTERISTICAS') {
-    console.log(`[WooCommerce] 🔍 Consulta de características`)
-    
-    try {
-      // CRÍTICO: Si no tenemos el producto aún, usar contexto solo si el usuario NO pide otro producto, luego buscar
-      if (!productStockData) {
-        if (session.currentProduct || context.currentProduct) {
-          const productoContextoCar = session.currentProduct || context.currentProduct
-          // CRÍTICO: No usar contexto si el usuario pide OTRO producto (ej. "qué tiene el K78?" con contexto B85)
-          if (!userAsksForDifferentProduct(message, productoContextoCar, analisisOpenAI, providedExplicitSku, providedExplicitId)) {
-            productStockData = productoContextoCar
-            console.log(`[WooCommerce] ✅ Usando producto del contexto para características: ${productStockData.name || 'N/A'}`)
-          } else {
-            console.log(`[WooCommerce] 🔄 CARACTERISTICAS: usuario pide otro producto, no usar contexto → buscar por SKU/término`)
-          }
-        }
-        if (!productStockData) {
-          // Si no hay producto en contexto (o no debemos usarlo), buscar por SKU o término (raw y normalizado en paralelo)
-          const skuToSearch = analisisOpenAI?.sku || analisisOpenAI?.terminoProducto
-          if (skuToSearch) {
-            const normalizedSkuSearch = normalizeCode(skuToSearch)
-            const [byRaw, byNorm] = await Promise.all([
-              /[-.\s]/.test(String(skuToSearch)) ? wordpressService.getProductBySku(skuToSearch) : Promise.resolve(null),
-              wordpressService.getProductBySku(normalizedSkuSearch)
-            ])
-            productStockData = byRaw || byNorm
-            if (!productStockData) {
-              // Intentar por término
-              const termino = analisisOpenAI?.terminoProducto || extractProductTerm(message)
-              if (termino) {
-                const searchResults = await wordpressService.searchProductsInWordPress(termino, 5)
-                if (searchResults && searchResults.length > 0) {
-                  productStockData = searchResults[0]
-                }
-              }
-            }
-          }
-        }
-      }
-      
-      if (productStockData) {
-        context.productStockData = productStockData
-        session.currentProduct = productStockData
-        console.log(`[WooCommerce] ✅ Producto encontrado para características: ${productStockData.name || 'N/A'}`)
-      }
-    } catch (error) {
-      console.error(`[WooCommerce] ❌ Error obteniendo producto para características:`, error.message)
-    }
-  }
+  // (CARACTERISTICAS unificado en PRODUCTOS: reclasificado arriba; producto se resuelve en bloque PRODUCTOS)
   
   // Si es consulta de información general, siempre incluir info de la empresa
   // (La información de la empresa ya está en context.companyInfo)
@@ -3466,80 +3502,6 @@ INSTRUCCIONES OBLIGATORIAS:
         textoParaIA = `Redacta una respuesta breve en español chileno. El cliente preguntó: "${message}". Responde que para mostrar los ${atributoNombre} disponibles necesitas el nombre completo o SKU del producto. Sé amable y profesional.`
       }
       
-    } else if (queryType === 'CARACTERISTICAS') {
-      // Consulta sobre características del producto
-      if (productStockData) {
-        // Construir información de características disponibles
-        let caracteristicasInfo = ''
-        
-        // Prioridad: short_description > description > attributes > categories
-        if (productStockData.short_description && productStockData.short_description.trim().length > 0) {
-          caracteristicasInfo += `\n- Descripción corta: ${productStockData.short_description.substring(0, 200)}`
-        } else if (productStockData.description && productStockData.description.trim().length > 0) {
-          caracteristicasInfo += `\n- Descripción: ${productStockData.description.substring(0, 200)}`
-        }
-        
-        // Agregar atributos si existen
-        if (productStockData.attributes && Array.isArray(productStockData.attributes) && productStockData.attributes.length > 0) {
-          const atributosList = productStockData.attributes
-            .filter(attr => attr.name && attr.options && attr.options.length > 0)
-            .map(attr => {
-              const opciones = Array.isArray(attr.options) ? attr.options.join(', ') : attr.options
-              return `  - ${attr.name}: ${opciones}`
-            })
-            .join('\n')
-          
-          if (atributosList) {
-            caracteristicasInfo += `\n\n- Atributos disponibles:\n${atributosList}`
-          }
-        }
-        
-        // Agregar categorías si existen
-        if (productStockData.categories && Array.isArray(productStockData.categories) && productStockData.categories.length > 0) {
-          const categoriasList = productStockData.categories
-            .filter(cat => cat.name)
-            .map(cat => cat.name)
-            .join(', ')
-          
-          if (categoriasList) {
-            caracteristicasInfo += `\n- Categorías: ${categoriasList}`
-          }
-        }
-        
-        if (!caracteristicasInfo || caracteristicasInfo.trim().length === 0) {
-          caracteristicasInfo = '\n- No hay información adicional disponible sobre este producto.'
-        }
-        
-        textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
-
-INFORMACIÓN REAL DEL PRODUCTO (consultada desde WooCommerce en tiempo real):
-- Nombre del producto: ${productStockData.name}
-${productStockData.sku ? `- SKU: ${productStockData.sku}` : ''}${caracteristicasInfo}
-
-El cliente preguntó: "${message}"
-
-INSTRUCCIONES OBLIGATORIAS:
-- Responde sobre las características del producto basándote SOLO en la información proporcionada arriba
-- Si hay descripción, úsala para responder
-- Si hay atributos, menciónalos
-- Si hay categorías, menciónalos si es relevante
-- Formato: "El ${productStockData.name} es [características según información disponible]."
-- Responde de forma breve y profesional, estilo WhatsApp
-- NO inventes características que no estén en la información proporcionada
-- Si no hay información adicional, di: "No hay información adicional disponible sobre este producto."`
-      } else {
-        // Producto no encontrado
-        textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
-
-SITUACIÓN:
-El cliente preguntó: "${message}"
-No se encontró el producto para consultar características.
-
-INSTRUCCIONES OBLIGATORIAS:
-- Pide más información (SKU o nombre completo del producto)
-- Sé profesional y cercano, estilo WhatsApp`
-      }
-      
     } else if (queryType === 'PRODUCTOS' || queryType === 'RECOMENDACION') {
       // Consulta de productos o recomendaciones - el agente consultó WooCommerce
       if (productStockData) {
@@ -3576,6 +3538,14 @@ INSTRUCCIONES OBLIGATORIAS:
           } catch (e) {
             console.warn('[WooCommerce] ⚠️ Error cargando variaciones para producto variable:', e?.message)
           }
+        }
+
+        // Consulta "qué diferencia tiene X con Y" entre variaciones: no ofrecemos esa función (sin mapeo claro de etiquetas)
+        const preguntaDiferenciaVariaciones = /\b(diferencia|diferencias|se\s+diferencia|en\s+qu[eé]\s+se\s+diferencia)\b.*\b(variaci[oó]n|variante|talla|tamaño|la\s+\d+|el\s+\d+)\b.*\b(con|y|entre)\b/i.test((message || '').trim()) ||
+          /\b(qu[eé]\s+diferencia|qu[eé]\s+tiene)\s+(la\s+variaci[oó]n\s+\d+|la\s+\d+|variante\s+\d+)\s+(con|respecto\s+a|y)\s+(la\s+)?(\d+)/i.test((message || '').trim())
+        if (preguntaDiferenciaVariaciones) {
+          const msgFijo = 'En el chat solo podemos mostrarte las opciones disponibles con su precio y stock. No tenemos el detalle de qué representa cada variación (medidas, etc.). Te recomiendo revisar la ficha del producto en imblasco.cl para esas especificaciones. ¿Necesitas algo más? 😊'
+          return createResponse(msgFijo, session.state, null, cart)
         }
 
         // Se encontró información del producto en WooCommerce
@@ -3615,8 +3585,33 @@ INSTRUCCIONES OBLIGATORIAS:
           ? `\n- Producto padre: ${productStockData.parent_product.name}`
           : ''
         
+        // Tags y productos similares (sin peso ni dimensiones: eliminados por información errónea)
+        let extraProductInfo = ''
+        const tagNames = (productStockData.tags && Array.isArray(productStockData.tags)) ? productStockData.tags.map(t => t.name).filter(Boolean) : []
+        const tagIds = (productStockData.tags && Array.isArray(productStockData.tags)) ? productStockData.tags.map(t => t.id).filter(id => id != null) : []
+        if (tagNames.length > 0) {
+          extraProductInfo += '\n- Tags del producto: ' + tagNames.join(', ') + '. Si preguntan por productos similares o parecidos, usa la lista de productos relacionados abajo.'
+        }
+        const mensajeNorm = (typeof message === 'string' ? message : '').toLowerCase()
+        const pideSimilares = /\b(parecido|similar|similares|otros como|algo como|algo parecido|relacionado)\b/.test(mensajeNorm) && tagIds.length > 0
+        let productosSimilaresParaLista = []
+        if (pideSimilares && productStockData.id != null) {
+          try {
+            const relacionados = await wordpressService.getProductsByTag(tagIds, 8)
+            const otros = (relacionados || []).filter(p => p.id !== productStockData.id)
+            if (otros.length > 0) {
+              productosSimilaresParaLista = otros.slice(0, 5)
+              const listaRelacionados = productosSimilaresParaLista.map(p => `${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''}${p.price != null ? ` - $${Number(p.price).toLocaleString('es-CL')}` : ''}`).join('; ')
+              extraProductInfo += '\n- Productos relacionados (mismo tag): ' + listaRelacionados + '.'
+            }
+          } catch (e) {
+            console.warn('[WooCommerce] No se pudieron cargar productos por tag:', e?.message)
+          }
+        }
+        
         // Si hay variaciones disponibles (producto variable), incluirlas
         let variationsInfo = ''
+        let variacionesTitulo = 'VARIACIONES DISPONIBLES'
         let allVariationsZeroStock = false
         if (context.productVariations && context.productVariations.length > 0 && !isVariation) {
           // Coherente con vStock más abajo: variación "cero stock" solo si cantidad explícita 0 o (sin cantidad y outofstock)
@@ -3628,16 +3623,25 @@ INSTRUCCIONES OBLIGATORIAS:
           if (allVariationsZeroStock && stockInfo !== 'Stock agotado (0 unidades)') {
             stockInfo = 'sin stock en variantes (0 unidades en cada variante por el momento)'
           }
-          const variationsList = context.productVariations.slice(0, 5).map(v => {
+          let optionDisplayNamesMap = new Map()
+          try {
+            optionDisplayNamesMap = await wordpressService.resolveAttributeOptionDisplayNames(context.productVariations) || optionDisplayNamesMap
+          } catch (e) {
+            console.warn('[Conversation] No se pudieron resolver nombres de atributos:', e?.message)
+          }
+          const variationLabels = context.productVariations.slice(0, 5).map(v => {
+            const { label } = getVariationDisplayLabel(v, optionDisplayNamesMap)
             const vQty = parseStockQuantity(v.stock_quantity)
             const vStock = v.stock_quantity != null
               ? `${vQty} unidad${vQty !== 1 ? 'es' : ''}`
               : v.stock_status === 'instock' ? 'disponible' : 'sin stock'
             const vPrice = v.price ? `$${parseFloat(v.price).toLocaleString('es-CL')}` : 'Precio N/A'
-            return `  - ${v.name}${v.sku ? ` (SKU: ${v.sku})` : ''} - ${vStock} - ${vPrice}`
-          }).join('\n')
-          
-          variationsInfo = `\n\nVARIACIONES DISPONIBLES (${context.productVariations.length} total${context.productVariations.length > 5 ? ', mostrando 5' : ''}):\n${variationsList}`
+            return `  - ${label}${v.sku ? ` (SKU: ${v.sku})` : ''} - ${vStock} - ${vPrice}`
+          })
+          const anyVariationLooksLikeColor = context.productVariations.slice(0, 5).some(v => getVariationDisplayLabel(v, optionDisplayNamesMap).isLikelyColor)
+          const variationsList = variationLabels.join('\n')
+          variacionesTitulo = anyVariationLooksLikeColor ? 'COLORES DISPONIBLES' : 'VARIACIONES DISPONIBLES'
+          variationsInfo = `\n\n${variacionesTitulo} (${context.productVariations.length} total${context.productVariations.length > 5 ? ', mostrando 5' : ''}):\n${variationsList}`
           if (allVariationsZeroStock) {
             variationsInfo += '\n\n⚠️ REGLA: Todas las variantes tienen 0 unidades. NO digas "disponible en stock" para el producto; di claramente que no hay stock en las variantes por el momento.'
           }
@@ -3652,16 +3656,70 @@ INSTRUCCIONES OBLIGATORIAS:
         const searchMethod = providedExplicitSku ? 'SKU exacto' : providedExplicitId ? 'ID exacto' : 'búsqueda por nombre'
         const confidenceLevel = providedExplicitSku || providedExplicitId ? 'ALTA (identificación exacta)' : 'MEDIA (coincidencia por nombre)'
         
+        // ¿El cliente pide más detalles / descripción del producto? (solo entonces incluimos descripción + atributos + categorías)
+        const pideMasDetalles = /\b(m[aá]s\s+detalles|m[aá]s\s+informaci[oó]n|qu[eé]\s+m[aá]s|describir|descripci[oó]n|caracter[ií]sticas|especificaciones|cu[eé]ntame\s+m[aá]s|detalles\s+del\s+producto|informaci[oó]n\s+del\s+producto|qu[eé]\s+es\s+este\s+producto)\b/i.test((message || '').trim())
+        const descripcionCorta = (productStockData.short_description && productStockData.short_description.trim()) || (productStockData.description && productStockData.description.trim()) || ''
+        const descripcionParaDetalles = pideMasDetalles && descripcionCorta
+          ? stripHtml(descripcionCorta).substring(0, 500)
+          : ''
+        // Atributos y categorías cuando pide más detalles (unificado con antiguo flujo CARACTERISTICAS)
+        let bloqueAtributosCategorias = ''
+        if (pideMasDetalles) {
+          if (productStockData.attributes && Array.isArray(productStockData.attributes) && productStockData.attributes.length > 0) {
+            const attrs = productStockData.attributes
+              .filter(attr => attr.name && attr.options && attr.options.length > 0)
+              .map(attr => `  - ${attr.name}: ${Array.isArray(attr.options) ? attr.options.join(', ') : attr.options}`)
+              .join('\n')
+            if (attrs) bloqueAtributosCategorias += `\n- Atributos disponibles:\n${attrs}`
+          }
+          if (productStockData.categories && Array.isArray(productStockData.categories) && productStockData.categories.length > 0) {
+            const cats = productStockData.categories.filter(c => c.name).map(c => c.name).join(', ')
+            if (cats) bloqueAtributosCategorias += `\n- Categorías: ${cats}`
+          }
+        }
+        
         // Obtener historial reciente para contexto
         const historyContext = getHistoryContext(session)
         
-        textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
+        if (pideSimilares && productosSimilaresParaLista.length > 0) {
+          // Respuesta tipo lista: productos similares (no ficha de un solo producto)
+          const listaSimilares = productosSimilaresParaLista.map((p, i) => {
+            const stockTxt = p.stock_quantity != null ? `${p.stock_quantity} unidades` : 'consultar stock'
+            return `${i + 1}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''} - Stock: ${stockTxt} - Precio: ${p.price != null ? '$' + Number(p.price).toLocaleString('es-CL') : 'N/A'}`
+          }).join('\n')
+          textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
+
+El cliente preguntó por productos similares o parecidos a "${productStockData.name}".
+
+PRODUCTOS SIMILARES (mismo tag, información real de WooCommerce):
+${listaSimilares}
+
+INSTRUCCIONES OBLIGATORIAS:
+- Responde con una LISTA de productos similares (no con la ficha de un solo producto).
+- Indica brevemente POR QUÉ son similares: comparten la misma categoría/etiqueta en el catálogo (ej. "Son copas del mismo tipo en nuestro catálogo" o "Comparten categoría con ...").
+- Usa formato numerado (1., 2., 3.) con nombre, SKU, stock y precio de cada uno.
+- Puedes empezar con una frase breve tipo "Además de ${productStockData.name}, estos productos son similares (misma categoría en catálogo):" o "Productos similares:".
+- Cierre amable: "Dime cuál te interesa y te doy más detalles" o similar.
+- Tono cercano, estilo WhatsApp.
+- NO inventes productos; usa SOLO la lista de arriba.`
+        } else {
+          const bloqueDescripcion = descripcionParaDetalles
+            ? `
+
+DESCRIPCIÓN DEL PRODUCTO (el cliente pidió más detalles; usa esto para dar información adicional - medidas, materiales, uso, etc.):
+${descripcionParaDetalles}`
+            : ''
+          const bloqueExtraDetalles = bloqueAtributosCategorias ? `\n${bloqueAtributosCategorias}` : ''
+          const instruccionDetalles = (descripcionParaDetalles || bloqueAtributosCategorias)
+            ? '\n- El cliente pidió MÁS DETALLES del producto. Incluye en tu respuesta un resumen o los puntos relevantes de la descripción anterior (medidas, materiales, especificaciones). Si hay atributos o categorías arriba, menciónalos si aplica. No inventes nada que no esté en la información proporcionada.'
+            : ''
+          textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
 
 INFORMACIÓN REAL DEL PRODUCTO (consultada desde WooCommerce en tiempo real):
 - Nombre del producto: ${productStockData.name}
 ${productStockData.sku ? `- SKU: ${productStockData.sku}` : ''}
 - Stock: ${stockInfo}
-- Precio: ${priceInfo}${parentInfo}${variationsInfo}
+- Precio: ${priceInfo}${parentInfo}${variationsInfo}${extraProductInfo ? '\n' + extraProductInfo : ''}${bloqueDescripcion}${bloqueExtraDetalles}
 
 MÉTODO DE BÚSQUEDA: ${searchMethod}
 NIVEL DE CONFIANZA: ${confidenceLevel}
@@ -3683,7 +3741,7 @@ Responde con formato humano y fácil de leer en chat. Saltos de línea entre blo
 3. Stock (en línea separada, OBLIGATORIO): "Stock: ${stockInfo}."
    CRÍTICO: Siempre incluye el stock con número exacto. Si preguntan "¿Cuántas unidades hay?" responde: ${stockNumberForPrompt != null ? stockNumberForPrompt : 'N/A'} unidades disponibles.
 4. Precio (en línea separada): "Precio: ${priceInfo}."
-${variationsInfo ? '5. Variaciones (línea en blanco antes): Título 🎨 "Colores disponibles" (o el atributo) y precio c/u si aplica. Lista con viñetas • (una por variante: nombre y unidades). Usa SOLO datos de VARIACIONES DISPONIBLES arriba. 6. Cierre: "Dime qué color y cantidad necesitas y lo reviso al tiro" o similar. 👉' : '5. Cierre: "¿Te gustaría saber algo más? 😊" o similar.'}
+${variationsInfo ? `5. Variaciones (línea en blanco antes): Usa el título exacto que aparece arriba en "${variacionesTitulo}" (con emoji 🎨). Lista con viñetas • cada línea tal como está en VARIACIONES/COLORES DISPONIBLES (cada línea ya trae la etiqueta de la variante, ej. "Color: Rojo" o "Talla: A+", stock y precio). NO cambies las etiquetas por otras palabras. 6. Cierre: "Dime qué color y cantidad necesitas y lo reviso al tiro" o similar. 👉` : '5. Cierre: "¿Te gustaría saber algo más? 😊" o similar.'}
 
 ⚠️ REGLA ABSOLUTA: NUNCA omitas el stock en tu respuesta, incluso si el cliente pregunta solo por precio o solo por stock.
 ⚠️ REGLA CRÍTICA: Si stock_quantity existe, SIEMPRE muestra el número exacto de unidades, no solo "disponible en stock".
@@ -3696,7 +3754,8 @@ IMPORTANTE:
 - NO digas "estoy verificando" - ya tienes la información real del producto
 - NO inventes información que no esté arriba
 - NO cambies nombres, SKUs, precios ni stock - usa EXACTAMENTE los valores proporcionados
-- NO menciones "producto padre", "SKU padre" ni "SKU hijo"`
+- NO menciones "producto padre", "SKU padre" ni "SKU hijo"${instruccionDetalles}`
+        }
         
       } else if ((productSearchResults && productSearchResults.length > 0) || (context.productSearchResults && context.productSearchResults.length > 0)) {
         // Usar context.productSearchResults si está disponible, sino usar la variable local
@@ -3878,13 +3937,13 @@ INSTRUCCIONES OBLIGATORIAS:
     } // Cierra el bloque cuando no se encontró información del producto
     
     } else {
-      // Otra consulta (queryType no es INFORMACION_GENERAL, PRODUCTOS, VARIANTE, CARACTERISTICAS ni FALLBACK)
+      // Otra consulta (queryType no es INFORMACION_GENERAL, PRODUCTOS, VARIANTE ni FALLBACK)
       // Esto solo debería ocurrir si queryType es 'OTRO' o un valor inesperado
       // Por seguridad, tratarlo como consulta genérica
       textoParaIA = `Redacta una respuesta clara y profesional en español chileno para la siguiente consulta del cliente: "${message}".
 
 Responde de forma breve (máximo 3-4 líneas), profesional y cercana, estilo WhatsApp.`
-    } // Cierra el if (queryType === 'INFORMACION_GENERAL') / else if (queryType === 'VARIANTE') / else if (queryType === 'CARACTERISTICAS') / else if (queryType === 'PRODUCTOS' || 'RECOMENDACION') / else
+    } // Cierra el if (queryType === 'INFORMACION_GENERAL') / else if (queryType === 'VARIANTE') / else if (queryType === 'PRODUCTOS' || 'RECOMENDACION') / else
     
     // Fortificación: si la consulta era mixta (info general + producto), incluir info empresa al inicio de la respuesta
     if (context.alsoAnswerInfoGeneral && textoParaIA && textoParaIA.trim().length > 0) {
