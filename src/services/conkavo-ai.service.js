@@ -354,6 +354,9 @@ REGLAS ESTRICTAS (CRÍTICO - EVITAR FALSOS POSITIVOS):
    - "recomiéndame un producto para regalo" → RECOMENDACION (término: "regalo")
    - "recomendaciones de regalos para oficina" → RECOMENDACION (término: "regalos oficina" o "regalo oficina")
    - "recomiéndame regalos de oficina" → RECOMENDACION (término: "regalos oficina")
+   - "recomiendame para un regalo empresarial" / "recomendaciones para regalo corporativo" → RECOMENDACION (término: "regalo empresarial" o "regalo corporativo")
+   - "recomiendame productos de oficina" / "recomendaciones de productos para oficina" → RECOMENDACION (término: "productos de oficina" o "oficina")
+   - "recomiendame llaveros" / "dame una recomendación de llaveros" → RECOMENDACION (término: "llaveros")
    - "recomendaciones para premiaciones" / "recomiéndame algo para premiar" → RECOMENDACION (término: "premiación" o "trofeos" según contexto)
    - "no sé qué comprar" → RECOMENDACION (sin término)
    - Extrae SIEMPRE un término cuando el cliente lo indique (regalo, oficina, premiación, etc.) para que el backend busque productos relacionados.

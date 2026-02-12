@@ -81,6 +81,11 @@ export const COMPANY_INFO = {
   },
   diasApertura: "Lunes a Sábado",
   diasCierre: "Domingo y festivos",
+  cotizacion: {
+    email: "cesar.barahona.b@gmail.com",
+    asunto: "Cotización",
+    cuerpo: "Indicar en el cuerpo del correo: producto(s) a consultar con su SKU, cantidad y RUT de la empresa."
+  },
 };
 
 /**
@@ -211,10 +216,29 @@ Teléfonos: ${info.contacto.telefono}
 `.trim();
 }
 
+/**
+ * Mensaje normalizado de instrucciones de cotización para el cliente (usuario logueado).
+ * Usar cuando pregunten cómo cotizar o quieran una cotización.
+ * @returns {string}
+ */
+export function getCotizacionMensajeCliente() {
+  const c = COMPANY_INFO.cotizacion;
+  return [
+    'Para solicitar una cotización:',
+    '',
+    `- Enviar correo a: ${c.email}`,
+    `- Asunto del correo: ${c.asunto}`,
+    `- En el cuerpo: ${c.cuerpo}`,
+    '',
+    'Si necesitas más información, no dudes en preguntar.'
+  ].join('\n');
+}
+
 export default {
   COMPANY_INFO,
   getCompanyInfo,
   getDatosBancariosMensajeCliente,
   getGarantiaDevolucionMensajeCliente,
+  getCotizacionMensajeCliente,
   formatCompanyInfoForAgent,
 };

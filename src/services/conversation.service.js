@@ -143,7 +143,7 @@ function resolveIsLoggedIn(options = {}) {
 function isPreguntaCotizacionOComoComprar(msg) {
   if (!msg || typeof msg !== 'string') return false
   const m = msg.toLowerCase().trim()
-  return /\b(cotizaci[oó]n|cotizar|precio|precios|comprar|pedido|como\s+comprar|c[oó]mo\s+comprar|realizar\s+pedido|hacer\s+pedido)\b/.test(m)
+  return /\b(cotizaci[oó]n|cotizar|cotizo|precio|precios|comprar|compro|pedido|como\s+comprar|como\s+cotizo|c[oó]mo\s+comprar|c[oó]mo\s+cotizo|realizar\s+pedido|hacer\s+pedido|quiero\s+una\s+cotizaci[oó]n)\b/.test(m)
 }
 
 /**
@@ -407,6 +407,21 @@ function isDevolucionRequest(msg) {
     /devolver\s+(un\s+)?producto/i,
     /devoluci[oó]n/i,
     /hacer\s+una\s+devoluci[oó]n/i
+  ]
+  return patterns.some(p => p.test(t))
+}
+
+/** Detección temprana: pide recomendación de productos (activar modo recomendación). */
+function isRecomendacionRequest(msg) {
+  if (!msg || typeof msg !== 'string') return false
+  const t = msg.trim().toLowerCase()
+  const patterns = [
+    /recomi[eé]ndame/i,
+    /dame\s+una\s+recomendaci[oó]n/i,
+    /algo\s+para\s+mi\s+negocio/i,
+    /quiero\s+una\s+recomendaci[oó]n/i,
+    /recomendaci[oó]n\s+de/i,
+    /recomendaciones\s+(de|para)/i
   ]
   return patterns.some(p => p.test(t))
 }
@@ -809,8 +824,7 @@ function getVariationDisplayLabel(v, optionDisplayNamesMap = null) {
     if (!rawValue) continue
     const key = optionDisplayNamesMap ? buildAttributeOptionKey(attr.name, rawValue) : null
     const displayName = key && optionDisplayNamesMap?.get(key)
-    // Solo mostrar atributo si tenemos nombre para mostrar (mapa); sin traducción no mostrarlo
-    if (optionDisplayNamesMap != null && !displayName) continue
+    // Preferir nombre del mapa (ej. "21 cm"); si no hay entrada (ej. variación solo trae value), usar rawValue para no ocultar el atributo
     const value = displayName ?? rawValue
     const attrName = (attr.name || '').replace(/^pa_/, '').trim()
     const attrLabel = attrName ? attrName.charAt(0).toUpperCase() + attrName.slice(1) : 'Opción'
@@ -1513,14 +1527,20 @@ export async function processMessageWithAI(userId, message, options = {}) {
       if (isDevolucionRequest(msgStr)) {
         queryType = 'DEVOLUCION'
         console.log(`[WooCommerce] Detección temprana: DEVOLUCION`)
+      } else if (isRecomendacionRequest(msgStr)) {
+        queryType = 'RECOMENDACION'
+        console.log(`[WooCommerce] Detección temprana: RECOMENDACION`)
       } else if (isHumanoRequest(msgStr)) {
         queryType = 'DERIVACION_HUMANO'
         console.log(`[WooCommerce] Detección temprana: DERIVACION_HUMANO`)
       } else if (isReclamoRequest(msgStr)) {
         queryType = 'RECLAMO'
         console.log(`[WooCommerce] Detección temprana: RECLAMO`)
+      } else if (isPreguntaCotizacionOComoComprar(msgStr)) {
+        queryType = 'INFORMACION_GENERAL'
+        console.log(`[WooCommerce] Detección temprana: cotización / cómo comprar → INFORMACION_GENERAL`)
       }
-      if (queryType !== 'DERIVACION_HUMANO' && queryType !== 'RECLAMO' && queryType !== 'DEVOLUCION') {
+      if (queryType !== 'DERIVACION_HUMANO' && queryType !== 'RECLAMO' && queryType !== 'DEVOLUCION' && queryType !== 'INFORMACION_GENERAL') {
       console.log(`[WooCommerce] 🤖 Consulta sin SKU/ID explícito → OpenAI analizará intención...`)
       
       try {
@@ -2491,6 +2511,30 @@ export async function processMessageWithAI(userId, message, options = {}) {
                       termToUse = cleanedTerm
                     }
                   }
+                  // RECOMENDACION: derivar término de búsqueda y mapear a términos que existen en catálogo (sets de regalo, etc.)
+                  if (queryType === 'RECOMENDACION' && termToUse) {
+                    const words = termToUse.trim().toLowerCase().split(/\s+/).filter(w => w.length > 1)
+                    const preferidas = ['regalo', 'oficina', 'corporativo', 'empresarial', 'llaveros', 'deportivo', 'premiacion', 'trofeo']
+                    const encontrada = preferidas.find(p => words.some(w => w.includes(p) || p.includes(w)))
+                    if (encontrada) {
+                      termToUse = encontrada
+                      console.log(`[WooCommerce] RECOMENDACION: término de contexto derivado: "${termToUse}"`)
+                    } else if (words.length > 1) {
+                      termToUse = words[0]
+                      console.log(`[WooCommerce] RECOMENDACION: usando primera palabra: "${termToUse}"`)
+                    }
+                    // Mapear a términos que devuelvan productos esperados: empresarial/corporativo → regalo; oficina sola → regalo oficina
+                    const recomendacionTermMap = {
+                      empresarial: 'regalo',
+                      corporativo: 'regalo',
+                      oficina: 'regalo oficina'
+                    }
+                    const termNorm = (termToUse || '').trim().toLowerCase()
+                    if (recomendacionTermMap[termNorm]) {
+                      termToUse = recomendacionTermMap[termNorm]
+                      console.log(`[WooCommerce] RECOMENDACION: término mapeado para catálogo: "${termToUse}"`)
+                    }
+                  }
                   // Rápido: búsqueda WooCommerce (1 petición). Catálogo completo solo si hace falta (0 resultados o 100 = puede haber más).
                   const SEARCH_LIMIT = 100
                   let allProducts = await wordpressService.searchProductsInWordPress(termToUse, SEARCH_LIMIT)
@@ -2504,7 +2548,48 @@ export async function processMessageWithAI(userId, message, options = {}) {
                     console.log(`[WooCommerce] Búsqueda rápida: ${allProducts.length} productos para "${termToUse}"`)
                   }
                   if (allProducts && allProducts.length > 0) {
-                      // Aplicar matching determinístico sobre el término extraído
+                      // RECOMENDACION: no usar matcher exacto; mostrar siempre lista de hasta 5 productos por contexto
+                      if (queryType === 'RECOMENDACION') {
+                        const normalizedTerm = normalizeSearchText(termToUse)
+                        let termWords = normalizedTerm.split(/\s+/).filter(w => w.length > 1)
+                        if (termWords.length === 0 && normalizedTerm.length > 2) termWords = [normalizedTerm]
+                        const minTermsRequired = 1 // una palabra basta para recomendaciones
+                        let partialMatches = termWords.length > 0 ? allProducts.filter(product => {
+                          const productName = normalizeSearchText(product.name || '')
+                          const productSku = normalizeCode(product.sku || '')
+                          let termsMatched = 0
+                          for (const word of termWords) {
+                            if (containsWholeWord(productName, word) || (productSku && productSku.includes(word.toUpperCase()))) termsMatched++
+                          }
+                          return termsMatched >= minTermsRequired
+                        }) : allProducts
+                        // Priorizar productos que contengan "regalo" en el nombre cuando el contexto es regalo/oficina (sets de regalo primero)
+                        if (termWords.includes('regalo') && partialMatches.length > 1) {
+                          partialMatches = [...partialMatches].sort((a, b) => {
+                            const aName = normalizeSearchText(a.name || '')
+                            const bName = normalizeSearchText(b.name || '')
+                            const aHasRegalo = containsWholeWord(aName, 'regalo')
+                            const bHasRegalo = containsWholeWord(bName, 'regalo')
+                            if (aHasRegalo && !bHasRegalo) return -1
+                            if (!aHasRegalo && bHasRegalo) return 1
+                            return 0
+                          })
+                        }
+                        const recomendacionList = partialMatches.slice(0, 5)
+                        if (recomendacionList.length > 0) {
+                          productSearchResults = recomendacionList
+                          context.productSearchResults = productSearchResults
+                          console.log(`[WooCommerce] RECOMENDACION: ${recomendacionList.length} productos para "${termToUse}"`)
+                        } else {
+                          const wpFallback = await wordpressService.searchProductsInWordPress(termToUse, 5)
+                          if (wpFallback?.length) {
+                            productSearchResults = wpFallback
+                            context.productSearchResults = wpFallback
+                            console.log(`[WooCommerce] RECOMENDACION fallback WP: ${wpFallback.length} productos`)
+                          }
+                        }
+                      } else {
+                      // Aplicar matching determinístico sobre el término extraído (PRODUCTOS, no RECOMENDACION)
                       const matchResult = productMatcher.matchProduct(
                         termToUse,                    // ✅ Término del producto (limpio)
                         allProducts,                    // Muestra de productos de WooCommerce
@@ -2659,6 +2744,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
                       console.log(`[WooCommerce] ⚠️  No se pueden buscar palabras: término="${termToUse}", normalizado="${normalizedTerm}", palabras extraídas=${termWords.length}`)
                     }
                     } // Cierra el else del matchResult.status === 'NOT_FOUND'
+                      } // Cierra el else (no RECOMENDACION)
                   } else {
                     console.log(`[WooCommerce] ⚠️  No se pudieron obtener productos de WooCommerce`)
                   }
@@ -2744,8 +2830,8 @@ export async function processMessageWithAI(userId, message, options = {}) {
       
       // Verificar resultados finales (usar context para asegurar que tenemos los valores actualizados)
       const finalSearchResults = context.productSearchResults || productSearchResults || []
-      // Un solo resultado: afirmar producto y fijar contexto (no pedir confirmación)
-      if (!productStockData && finalSearchResults.length === 1) {
+      // Un solo resultado: afirmar producto y fijar contexto (no pedir confirmación). RECOMENDACION siempre muestra lista (aunque sea de 1).
+      if (!productStockData && finalSearchResults.length === 1 && queryType !== 'RECOMENDACION') {
         productStockData = finalSearchResults[0]
         context.productStockData = productStockData
         session.currentProduct = finalSearchResults[0]
@@ -3231,26 +3317,17 @@ INSTRUCCIONES:
 - Sé empático y profesional, estilo WhatsApp.
 - NO busques productos ni des información de catálogo.`
     } else if (queryType === 'DEVOLUCION') {
-      const info = companyInfoService.getCompanyInfo()
-      const garantiaTexto = `GARANTÍA Y DEVOLUCIONES:
-- Productos nuevos: ${info.garantia.productosNuevos}
-- Perecibles o uso breve: ${info.garantia.pereciblesUsoBreve}
-- ${info.garantia.requisitos}
-
-DERECHO A RETRACTO (devoluciones):
-- ${info.derechoRetracto.aplica}
-- ${info.derechoRetracto.costos}
-- ${info.derechoRetracto.noAplica}`
+      const garantiaTexto = companyInfoService.getGarantiaDevolucionMensajeCliente()
       textoParaIA = `Redacta una respuesta breve y profesional en español chileno.
 
 El cliente quiere devolver un producto: "${message}"
 
 INSTRUCCIONES:
-- Responde SOLO con la política de garantía y devoluciones. Usa EXACTAMENTE la información siguiente.
+- Responde SOLO con la política de garantía y devoluciones. Usa EXACTAMENTE el texto siguiente, sin añadir asteriscos ni formato markdown (para que el cliente pueda copiarlo y pegarlo).
 - PROHIBIDO: NO digas que "un ejecutivo se pondrá en contacto", NO pidas "dejar datos" ni "te llamaremos". Nosotros NO hacemos eso.
 - Sé claro y profesional, estilo WhatsApp.
 
-INFORMACIÓN OBLIGATORIA A INCLUIR:
+INFORMACIÓN OBLIGATORIA A INCLUIR (copia este texto exactamente):
 ${garantiaTexto}`
     } else if (queryType === 'INFORMACION_GENERAL') {
       // VALIDACIÓN CRÍTICA: Verificar que NO sea un saludo mal clasificado
@@ -3273,6 +3350,20 @@ ${garantiaTexto}`
       if (!isLoggedIn && isPreguntaCotizacionOComoComprar(message)) {
         const info = companyInfoService.getCompanyInfo()
         textoParaIA = getMessageNecesitasCuentaParaCotizacion(message, info.comoRealizarPedido.paso1)
+      } else if (isLoggedIn && isPreguntaCotizacionOComoComprar(message)) {
+        // Usuario logueado preguntando por cotización: dar solo instrucciones de cotización (cesar.barahona.b@gmail.com, asunto, cuerpo)
+        const cotizacionTexto = companyInfoService.getCotizacionMensajeCliente()
+        textoParaIA = `Redacta una respuesta breve y profesional en español chileno.
+
+El cliente preguntó por cotización o cómo cotizar: "${message}"
+
+INSTRUCCIONES:
+- Responde SOLO con las instrucciones de cotización. Usa EXACTAMENTE la información siguiente.
+- NO uses ventas@imblasco.cl ni teléfonos para esta respuesta. El correo de cotización es el indicado abajo.
+- Sé claro y profesional, estilo WhatsApp.
+
+INFORMACIÓN OBLIGATORIA A INCLUIR:
+${cotizacionTexto}`
       } else {
       // Consulta de información general - el backend ya tiene la info
       const companyInfo = companyInfoService.formatCompanyInfoForAgent()
@@ -3668,7 +3759,7 @@ INSTRUCCIONES OBLIGATORIAS:
           if (productStockData.attributes && Array.isArray(productStockData.attributes) && productStockData.attributes.length > 0) {
             const attrs = productStockData.attributes
               .filter(attr => attr.name && attr.options && attr.options.length > 0)
-              .map(attr => `  - ${attr.name}: ${Array.isArray(attr.options) ? attr.options.join(', ') : attr.options}`)
+              .map(attr => `  - ${attr.name}: ${Array.isArray(attr.options) ? attr.options.map(opt => String(opt)).join(', ') : String(attr.options || '')}`)
               .join('\n')
             if (attrs) bloqueAtributosCategorias += `\n- Atributos disponibles:\n${attrs}`
           }
@@ -3706,7 +3797,7 @@ INSTRUCCIONES OBLIGATORIAS:
           const bloqueDescripcion = descripcionParaDetalles
             ? `
 
-DESCRIPCIÓN DEL PRODUCTO (el cliente pidió más detalles; usa esto para dar información adicional - medidas, materiales, uso, etc.):
+DESCRIPCIÓN DEL PRODUCTO (resumida, máximo 500 caracteres; el cliente pidió más detalles - usa esto para dar información adicional: medidas, materiales, uso, etc.):
 ${descripcionParaDetalles}`
             : ''
           const bloqueExtraDetalles = bloqueAtributosCategorias ? `\n${bloqueAtributosCategorias}` : ''
@@ -3761,7 +3852,8 @@ IMPORTANTE:
         // Usar context.productSearchResults si está disponible, sino usar la variable local
         const finalSearchResults = context.productSearchResults || productSearchResults || []
         // Para no mostrar "hola! tienes X?" en "relacionados con": usar término buscado o mensaje sin saludo
-        const displayQuery = (context.terminoProductoParaBuscar && String(context.terminoProductoParaBuscar).trim()) || stripLeadingGreeting(message) || message
+        const displayQueryRaw = (context.terminoProductoParaBuscar && String(context.terminoProductoParaBuscar).trim()) || stripLeadingGreeting(message) || message
+        const displayQuery = (displayQueryRaw && displayQueryRaw.trim()) ? displayQueryRaw.trim().substring(0, 80) : 'tu búsqueda'
         
         // Si necesita confirmación (resultados del fallback genérico), pedir más información
         if (context.needsConfirmation) {
@@ -3784,7 +3876,7 @@ INSTRUCCIONES OBLIGATORIAS:
           const stockByProductId = await enrichStockForListProducts(sliceForList)
           const productsList = sliceForList.map((p, index) => {
             const stockInfo = getStockTextForListProduct(p, stockByProductId)
-            return `${index + 1}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''}${p.price ? ` - $${p.price.toLocaleString('es-CL')}` : ''} - Stock: ${stockInfo}`
+            return `${index + 1}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''}${p.price != null ? ` - $${Number(p.price).toLocaleString('es-CL')}` : ''} - Stock: ${stockInfo}`
           }).join('\n')
           
           // Obtener historial reciente para contexto
@@ -3869,7 +3961,8 @@ INSTRUCCIONES OBLIGATORIAS:
 - NO inventes información`
             } else {
               // Criterio único: mismo límite, enriquecimiento y texto de stock que el otro bloque de listas
-              const displayQueryInner = (context.terminoProductoParaBuscar && String(context.terminoProductoParaBuscar).trim()) || stripLeadingGreeting(message) || message
+              const displayQueryInnerRaw = (context.terminoProductoParaBuscar && String(context.terminoProductoParaBuscar).trim()) || stripLeadingGreeting(message) || message
+              const displayQueryInner = (displayQueryInnerRaw && displayQueryInnerRaw.trim()) ? displayQueryInnerRaw.trim().substring(0, 80) : 'tu búsqueda'
               const sliceForList = finalSearchResults.slice(0, MAX_PRODUCTS_TO_ENRICH_STOCK)
               const stockByProductId = await enrichStockForListProducts(sliceForList)
               const productsList = sliceForList.map((p, index) => {
