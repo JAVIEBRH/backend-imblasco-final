@@ -325,11 +325,13 @@ export async function getProductsSample(limit = 100) {
 
 /**
  * Obtener TODOS los productos de WooCommerce con paginación completa
+ * @param {{ includeStock?: boolean }} [opts] - includeStock: si true (default), incluye stock_quantity y price; si false, solo estructura (para caché)
  * @returns {Promise<Array>} Lista completa de productos
  */
-export async function getAllProducts() {
+export async function getAllProducts(opts = {}) {
+  const includeStock = opts.includeStock !== false
   try {
-    console.log('[WooCommerce] Obteniendo todos los productos con paginación...')
+    console.log('[WooCommerce] Obteniendo todos los productos con paginación...' + (includeStock ? '' : ' (solo estructura)'))
     
     // Primera petición para obtener el total de páginas
     const firstPage = await wcRequest(`products?per_page=100&page=1&status=publish`, {}, true)
@@ -370,26 +372,125 @@ export async function getAllProducts() {
     
     console.log(`[WooCommerce] ✅ Total de productos obtenidos: ${allProducts.length}`)
     
-    return allProducts.map(product => ({
-      id: product.id,
-      name: product.name || '',
-      sku: product.sku || '',
-      price: product.price ? parseFloat(product.price) : null,
-      stock_quantity: product.stock_quantity !== null && product.stock_quantity !== undefined 
-        ? parseStockQuantity(product.stock_quantity) 
-        : null,
-      stock_status: product.stock_status || 'unknown',
-      manage_stock: product.manage_stock || false,
-      available: product.stock_status === 'instock' || (product.stock_quantity != null && parseStockQuantity(product.stock_quantity) > 0),
-      type: product.type || 'simple',
-      weight: product.weight != null ? String(product.weight).trim() || null : null,
-      dimensions: parseDimensions(product.dimensions),
-      tags: parseTags(product.tags)
-    }))
+    return allProducts.map(product => {
+      const base = {
+        id: product.id,
+        name: product.name || '',
+        sku: product.sku || '',
+        type: product.type || 'simple',
+        weight: product.weight != null ? String(product.weight).trim() || null : null,
+        dimensions: parseDimensions(product.dimensions),
+        tags: parseTags(product.tags)
+      }
+      if (includeStock) {
+        base.price = product.price ? parseFloat(product.price) : null
+        base.stock_quantity = product.stock_quantity !== null && product.stock_quantity !== undefined
+          ? parseStockQuantity(product.stock_quantity)
+          : null
+        base.stock_status = product.stock_status || 'unknown'
+        base.manage_stock = product.manage_stock || false
+        base.available = product.stock_status === 'instock' || (product.stock_quantity != null && parseStockQuantity(product.stock_quantity) > 0)
+      }
+      return base
+    })
   } catch (error) {
     console.error('Error obteniendo todos los productos:', error.message)
     return []
   }
+}
+
+// Caché de estructura del catálogo (sin stock/precio) para no congelar stock
+let catalogStructureCache = null
+let catalogStructureCacheTimestamp = null
+let catalogDownloadInProgress = false
+let catalogDownloadPromise = null
+const CATALOG_STRUCTURE_TTL_MS = 10 * 60 * 1000 // 10 minutos
+
+/** Caché de stock/precio por producto (TTL corto para no congelar stock) */
+const stockPriceCache = new Map()
+const STOCK_PRICE_TTL_MS = 30 * 1000 // 30 segundos
+
+/**
+ * Obtener estructura del catálogo (sin stock/precio) con caché. Evita descargas repetidas y no congela stock.
+ * @returns {Promise<Array>} Lista de productos con id, name, sku, type, tags, etc. (sin stock/precio)
+ */
+export async function getCatalogStructure() {
+  const now = Date.now()
+  if (catalogStructureCache && catalogStructureCacheTimestamp && (now - catalogStructureCacheTimestamp) < CATALOG_STRUCTURE_TTL_MS) {
+    console.log(`[WooCommerce] ✅ Usando estructura del catálogo desde caché (${catalogStructureCache.length} productos)`)
+    return catalogStructureCache
+  }
+  if (catalogDownloadInProgress && catalogDownloadPromise) {
+    console.log('[WooCommerce] Esperando descarga de catálogo en progreso...')
+    return await catalogDownloadPromise
+  }
+  catalogDownloadInProgress = true
+  catalogDownloadPromise = getAllProducts({ includeStock: false })
+    .then(products => {
+      catalogStructureCache = products
+      catalogStructureCacheTimestamp = Date.now()
+      catalogDownloadInProgress = false
+      catalogDownloadPromise = null
+      console.log(`[WooCommerce] ✅ Estructura del catálogo cacheada: ${products.length} productos`)
+      return products
+    })
+    .catch(err => {
+      catalogDownloadInProgress = false
+      catalogDownloadPromise = null
+      throw err
+    })
+  return await catalogDownloadPromise
+}
+
+/**
+ * Invalidar caché de estructura (ej. cuando haya cambios en productos)
+ */
+export function invalidateCatalogStructureCache() {
+  catalogStructureCache = null
+  catalogStructureCacheTimestamp = null
+  console.log('[WooCommerce] Caché de estructura del catálogo invalidado')
+}
+
+/**
+ * Enriquecer producto (de estructura) con stock/precio actualizado en tiempo real
+ * @param {Object} product - Producto con al menos id (de getCatalogStructure)
+ * @returns {Promise<Object>} Producto con stock_quantity, stock_status, price, available
+ */
+export async function enrichProductWithStockPrice(product) {
+  if (!product || product.id == null) return product
+  const now = Date.now()
+  const cached = stockPriceCache.get(product.id)
+  if (cached && (now - cached.timestamp) < STOCK_PRICE_TTL_MS) {
+    return { ...product, ...cached.data }
+  }
+  try {
+    const full = await getProductById(product.id)
+    if (!full) return product
+    const data = {
+      price: full.price,
+      stock_quantity: full.stock_quantity,
+      stock_status: full.stock_status,
+      available: full.available,
+      manage_stock: full.manage_stock,
+      attributes: full.attributes || product.attributes || []
+    }
+    stockPriceCache.set(product.id, { data, timestamp: now })
+    return { ...product, ...data }
+  } catch (e) {
+    console.warn(`[WooCommerce] Error enriqueciendo producto ${product.id}:`, e?.message)
+    return product
+  }
+}
+
+/**
+ * Enriquecer hasta N productos con stock/precio en tiempo real (en paralelo)
+ */
+export async function enrichProductsWithStockPrice(products, max = 5) {
+  const toEnrich = (Array.isArray(products) ? products : []).slice(0, max)
+  if (toEnrich.length === 0) return products
+  const enriched = await Promise.all(toEnrich.map(p => enrichProductWithStockPrice(p)))
+  const rest = (Array.isArray(products) ? products : []).slice(max)
+  return [...enriched, ...rest]
 }
 
 /**
@@ -749,6 +850,10 @@ export default {
   getProductById,
   getProductsSample,
   getAllProducts,
+  getCatalogStructure,
+  enrichProductWithStockPrice,
+  enrichProductsWithStockPrice,
+  invalidateCatalogStructureCache,
   getProductVariations,
   getProductsByTag,
   findVariationBySku,

@@ -503,6 +503,64 @@ function extractProductTerm(message) {
 }
 
 /**
+ * Detecta si una consulta NO debería disparar descarga completa de catálogo.
+ * Conservadora: solo bloquea casos claramente no-búsqueda.
+ *
+ * @param {string} message - Mensaje original del usuario
+ * @param {string} extractedTerm - Término extraído por extractProductTerm()
+ * @param {string} queryType - Tipo de consulta (PRODUCTOS, RECOMENDACION, etc.)
+ * @returns {boolean} - true si debería evitar getCatalogStructure(), false si puede buscar normalmente
+ */
+function shouldSkipFullCatalogSearch(message, extractedTerm, queryType) {
+  if (!message || typeof message !== 'string') return false
+
+  const msgNorm = message.toLowerCase().trim()
+  const termNorm = (extractedTerm || '').toLowerCase().trim()
+
+  // Criterio 1: Preguntas sobre características/atributos sin término válido
+  const caracteristicasPatterns = [
+    /cuantas?\s+(unidades?|cajas?|piezas?|unidad)\s+(trae|contiene|viene|incluye)/i,
+    /que\s+(personalizacion|caracteristicas|especificaciones|atributos?)\s+tiene/i,
+    /cuantas?\s+(unidades?|cajas?)\s+(trae|contiene)\s+el\s+(embalaje|master|pack)/i
+  ]
+  const isCaracteristicasQuery = caracteristicasPatterns.some(p => p.test(message))
+  if (isCaracteristicasQuery) {
+    if (!termNorm || termNorm.length < 3 || TERMINOS_GENERICOS_PRODUCTO.some(gen => termNorm === gen)) {
+      console.log('[WooCommerce] ⚠️ Pregunta sobre características sin término válido → evitando catálogo completo')
+      return true
+    }
+  }
+
+  // Criterio 2: Medidas/dimensiones sin nombre de producto claro
+  const medidasPattern = /\d+[,.]?\d*\s*[xX×]\s*\d+[,.]?\d*(\s*[xX×]\s*\d+[,.]?\d*)?/
+  const hasMedidas = medidasPattern.test(message)
+  if (hasMedidas) {
+    const sinMedidas = message
+      .replace(/\d+[,.]?\d*\s*[xX×]\s*\d+[,.]?\d*(\s*[xX×]\s*\d+[,.]?\d*)?/g, '')
+      .replace(/medidas?|dimensiones?|cms?|cm\.|metros?/gi, '')
+      .trim()
+    const termSinMedidas = extractProductTerm(sinMedidas)
+    if (!termSinMedidas || termSinMedidas.length < 3) {
+      console.log('[WooCommerce] ⚠️ Medidas sin nombre de producto válido → evitando catálogo completo')
+      return true
+    }
+  }
+
+  // Criterio 3: Término genérico o vacío sin SKU/ID explícito
+  if (!termNorm || termNorm.length < 2) {
+    const hasExplicitSku = /\b(SKU|SKU:|codigo|código|id|ID):?\s*[A-Za-z0-9]+/i.test(message) ||
+      /\b\d{6,}\b/.test(message) ||
+      /\b[A-Za-z]\d+[A-Za-z]?[-.]?\d*\b/i.test(message)
+    if (!hasExplicitSku) {
+      console.log('[WooCommerce] ⚠️ Término vacío/genérico sin SKU explícito → evitando catálogo completo')
+      return true
+    }
+  }
+
+  return false
+}
+
+/**
  * Detectar consultas específicas sobre la hora de almuerzo
  * DETECCIÓN REFORZADA: Captura todas las variaciones posibles de preguntas sobre hora de almuerzo
  * Incluye variaciones con/sin acentos, diferentes formas de preguntar, etc.
@@ -638,6 +696,21 @@ function createResponse(message, state, options = null, cart = null) {
 function userAsksForDifferentProduct(message, contextProduct, analisisOpenAI, providedExplicitSku, providedExplicitId) {
   if (!contextProduct) return false
 
+  // Preguntas genéricas sobre atributos (unidades, embalaje, personalización) sin SKU/ID distinto → mantener contexto
+  if (!providedExplicitSku && !providedExplicitId && !analisisOpenAI?.sku && !analisisOpenAI?.id) {
+    const msgLower = (message || '').toLowerCase()
+    const isAttributeQuestion = /cuantas?\s+(unidades?|cajas?|piezas?)\s+(trae|contiene|viene)/i.test(msgLower) ||
+      /que\s+(personalizacion|caracteristicas|especificaciones)\s+tiene/i.test(msgLower) ||
+      (/(embalaje|master|pack)/i.test(msgLower) && /unidades?|trae|contiene/i.test(msgLower))
+    if (isAttributeQuestion) {
+      const term = (analisisOpenAI?.terminoProducto || extractProductTerm(message)).trim().toLowerCase()
+      if (!term || TERMINOS_GENERICOS_PRODUCTO.includes(term)) return false
+      const attrOnlyWords = ['embalaje', 'master', 'pack', 'packaging', 'unidades', 'cajas', 'el', 'la']
+      const termWords = term.split(/\s+/).filter(Boolean)
+      if (termWords.length > 0 && termWords.every(w => attrOnlyWords.includes(w))) return false
+    }
+  }
+
   const contextSku = normalizeCode(contextProduct.sku || '')
   const contextId = String(contextProduct.id ?? '').trim()
   const contextNameNorm = normalizeSearchText(contextProduct.name || '')
@@ -751,8 +824,43 @@ function parseStockQuantity(val) {
   return Math.floor(n)
 }
 
-/** Límite de productos a enriquecer con stock de variaciones en listas (evita exceso de llamadas API) */
+/** Límite de productos a enriquecer con stock/precio en listas (evita exceso de llamadas API). Solo los primeros N ítems quedan con price/stock cuando la lista viene de estructura; el resto puede mostrarse como "consultar stock". */
 const MAX_PRODUCTS_TO_ENRICH_STOCK = 5
+
+/**
+ * Indica si un producto ya tiene datos de precio/stock (vino de API completa o fue enriquecido).
+ * Criterio único para evitar llamadas redundantes y para decidir si enriquecer listas.
+ * @param {Object} product - Producto
+ * @returns {boolean}
+ */
+function isProductEnriched(product) {
+  return !!(product && product.id && product.price != null && product.stock_quantity !== undefined)
+}
+
+/**
+ * Asegura que un producto tenga price/stock/attributes (para ficha y VARIANTE).
+ * Si ya está enriquecido, lo devuelve tal cual.
+ * @param {Object} product - Producto (puede ser de estructura o ya completo)
+ * @returns {Promise<Object>} Producto con price, stock y attributes
+ */
+async function ensureProductEnriched(product) {
+  if (!product || !product.id) return product
+  if (isProductEnriched(product)) return product
+  return wordpressService.enrichProductWithStockPrice(product)
+}
+
+/**
+ * Asegura que una lista de productos tenga price/stock en los ítems mostrados.
+ * Solo enriquece hasta max ítems (por defecto MAX_PRODUCTS_TO_ENRICH_STOCK); el resto se devuelve sin modificar.
+ * @param {Array} list - Lista de productos (pueden ser de estructura)
+ * @param {number} max - Máximo a enriquecer (por defecto MAX_PRODUCTS_TO_ENRICH_STOCK)
+ * @returns {Promise<Array>} Lista con ítems enriquecidos
+ */
+async function ensureListEnriched(list, max = MAX_PRODUCTS_TO_ENRICH_STOCK) {
+  if (!Array.isArray(list) || list.length === 0) return list
+  if (isProductEnriched(list[0])) return list
+  return wordpressService.enrichProductsWithStockPrice(list, max)
+}
 
 /**
  * Obtener texto de stock para un producto en una lista, usando dato precalculado de variaciones si existe.
@@ -1574,13 +1682,24 @@ export async function processMessageWithAI(userId, message, options = {}) {
                    analisisOpenAI.tipo === 'RECOMENDACION' ? 'RECOMENDACION' :
                    'AMBIGUA'
         
-        // Punto 1: Unificar "más detalles/características" en PRODUCTOS (backend decide; un solo flujo)
+        // Punto 1: Unificar "más detalles/características" en PRODUCTOS salvo cuando hay producto en contexto y pregunta sobre atributo
         if (queryType === 'CARACTERISTICAS') {
-          queryType = 'PRODUCTOS'
-          if (analisisOpenAI) {
-            analisisOpenAI.tipo = 'PRODUCTO'
+          const productInContext = session.currentProduct || context.currentProduct
+          const msgLower = (typeof message === 'string' ? message : '').toLowerCase()
+          const looksLikeAttributeQuestion = !!(analisisOpenAI?.atributo) ||
+            /cuantas?\s+(unidades?|cajas?|piezas?)\s+(trae|contiene|viene)/i.test(msgLower) ||
+            /que\s+(personalizacion|caracteristicas|especificaciones)\s+tiene/i.test(msgLower) ||
+            (/(embalaje|master|pack)/i.test(msgLower) && /unidades?|trae|contiene/i.test(msgLower))
+          if (productInContext && looksLikeAttributeQuestion) {
+            console.log('[WooCommerce] 🔄 CARACTERISTICAS con producto en contexto y pregunta sobre atributo → respondiendo desde contexto (sin búsqueda)')
+            // Mantener queryType = 'CARACTERISTICAS'; no convertir a PRODUCTOS
+          } else {
+            queryType = 'PRODUCTOS'
+            if (analisisOpenAI) {
+              analisisOpenAI.tipo = 'PRODUCTO'
+            }
+            console.log(`[WooCommerce] 🔄 CARACTERISTICAS → PRODUCTOS (unificado: más detalles por backend)`)
           }
-          console.log(`[WooCommerce] 🔄 CARACTERISTICAS → PRODUCTOS (unificado: más detalles por backend)`)
         }
         
         console.log(`[WooCommerce] 🤖 OpenAI decidió: tipo=${queryType}, término=${analisisOpenAI.terminoProducto || 'N/A'}, SKU=${analisisOpenAI.sku || 'N/A'}, ID=${analisisOpenAI.id || 'N/A'}, necesitaMásInfo=${analisisOpenAI.necesitaMasInfo}`)
@@ -1667,8 +1786,11 @@ export async function processMessageWithAI(userId, message, options = {}) {
       productStockData = null
       context.productStockData = null
       context.productVariations = null
+      context.productSearchResults = null
       session.currentProduct = null
       session.productVariations = null
+      session.lastShownResults = null
+      session.lastSearchTerm = null
     }
     if (productStockData) {
       context.productStockData = productStockData
@@ -1858,9 +1980,9 @@ export async function processMessageWithAI(userId, message, options = {}) {
           // Pregunta sobre variaciones pero SIN producto en contexto - usar lastShownResults si existe
           const lastShownAmb = session.lastShownResults || []
           if (lastShownAmb.length === 1) {
-            productStockData = lastShownAmb[0]
+            productStockData = await wordpressService.enrichProductWithStockPrice(lastShownAmb[0])
             context.productStockData = productStockData
-            session.currentProduct = lastShownAmb[0]
+            session.currentProduct = productStockData
             session.productVariations = null
             session.lastShownResults = null
             session.lastSearchTerm = null
@@ -1958,6 +2080,10 @@ export async function processMessageWithAI(userId, message, options = {}) {
         if (terminoProductoParaBuscar && TERMINOS_GENERICOS_PRODUCTO.includes(terminoProductoParaBuscar.toLowerCase().trim())) {
           console.log(`[WooCommerce] ⚠️ Término genérico detectado: "${terminoProductoParaBuscar}" → No se buscará para evitar falsos positivos`)
           terminoProductoParaBuscar = null
+        }
+        const shouldSkipFullCatalog = shouldSkipFullCatalogSearch(message, terminoProductoParaBuscar || '', queryType)
+        if (shouldSkipFullCatalog) {
+          console.log('[WooCommerce] ⚠️ Consulta detectada como no-búsqueda de producto por nombre → evitando descarga completa de catálogo')
         }
         
         // Si después del análisis todavía no hay SKU/ID, intentar detección adicional con regex
@@ -2125,9 +2251,9 @@ export async function processMessageWithAI(userId, message, options = {}) {
             if (tipoSeguimiento === 'ELIGE_UNO') {
               const idx = await conkavoAI.interpretarSeguimientoCorto(message, lastShown)
               if (idx >= 1 && idx <= lastShown.length) {
-                productStockData = lastShown[idx - 1]
+                productStockData = await wordpressService.enrichProductWithStockPrice(lastShown[idx - 1])
                 context.productStockData = productStockData
-                session.currentProduct = lastShown[idx - 1]
+                session.currentProduct = productStockData
                 session.productVariations = null
                 session.lastShownResults = null
                 session.lastSearchTerm = null
@@ -2145,9 +2271,9 @@ export async function processMessageWithAI(userId, message, options = {}) {
         if (!resolvedFromLastShown && currentSearchTermNorm && lastShown.length > 0 && session.lastSearchTerm && session.lastSearchTerm === currentSearchTermNorm) {
           const exactInLast = lastShown.filter(p => productMatchesCodeExactly(p, currentSearchTermRaw))
           if (exactInLast.length === 1) {
-            productStockData = exactInLast[0]
+            productStockData = await wordpressService.enrichProductWithStockPrice(exactInLast[0])
             context.productStockData = productStockData
-            session.currentProduct = exactInLast[0]
+            session.currentProduct = productStockData
             session.productVariations = null
             session.lastShownResults = null
             session.lastSearchTerm = null
@@ -2230,7 +2356,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
               const normalizedSkuForFilter = normalizeCode(providedExplicitSku)
               let productsWithCode = []
 
-              // Prioridad: búsqueda por API (rápida) antes que getAllProducts (costosa). Misma lógica de filtro.
+              // Prioridad: búsqueda por API (rápida) antes que getCatalogStructure (caché estructura). Misma lógica de filtro.
               const searchResults = await wordpressService.searchProductsInWordPress(providedExplicitSku, 30)
               if (searchResults && searchResults.length > 0) {
                 productsWithCode = searchResults.filter(p => {
@@ -2244,7 +2370,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
               }
 
               if (productsWithCode.length === 0) {
-                const allProducts = await wordpressService.getAllProducts()
+                const allProducts = await wordpressService.getCatalogStructure()
                 productsWithCode = allProducts.filter(p => {
                   const productName = normalizeCode(p.name || '')
                   const productSku = normalizeCode(p.sku || '')
@@ -2253,9 +2379,9 @@ export async function processMessageWithAI(userId, message, options = {}) {
               }
 
               if (productsWithCode.length === 1) {
-                productStockData = productsWithCode[0]
+                productStockData = await wordpressService.enrichProductWithStockPrice(productsWithCode[0])
                 context.productStockData = productStockData
-                session.currentProduct = productsWithCode[0] // Guardar para futuras referencias
+                session.currentProduct = productStockData
                 console.log(`[WooCommerce] ✅ Producto encontrado por código en nombre/SKU: ${productStockData.name} (SKU real: ${productStockData.sku || 'N/A'})`)
               } else if (productsWithCode.length === 0) {
                 // CRÍTICO: Si no se encuentra el producto, limpiar contexto y retornar mensaje amigable
@@ -2271,9 +2397,9 @@ export async function processMessageWithAI(userId, message, options = {}) {
               } else if (productsWithCode.length > 1) {
                 const exactMatches = productsWithCode.filter(p => productMatchesCodeExactly(p, providedExplicitSku))
                 if (exactMatches.length === 1) {
-                  productStockData = exactMatches[0]
+                  productStockData = await ensureProductEnriched(exactMatches[0])
                   context.productStockData = productStockData
-                  session.currentProduct = exactMatches[0]
+                  session.currentProduct = productStockData
                   console.log(`[WooCommerce] ✅ Un solo match exacto para "${providedExplicitSku}": ${productStockData.name} (SKU: ${productStockData.sku || 'N/A'})`)
                 } else {
                   const sorted = [...productsWithCode].sort((a, b) => {
@@ -2281,7 +2407,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
                     const bExact = productMatchesCodeExactly(b, providedExplicitSku) ? 1 : 0
                     return bExact - aExact
                   })
-                  productSearchResults = sorted.slice(0, 10)
+                  productSearchResults = await ensureListEnriched(sorted.slice(0, 10))
                   context.productSearchResults = productSearchResults
                   console.log(`[WooCommerce] ✅ Encontrados ${productsWithCode.length} productos que contienen "${providedExplicitSku}" en nombre/SKU`)
                 }
@@ -2342,10 +2468,18 @@ export async function processMessageWithAI(userId, message, options = {}) {
           try {
             const SEARCH_LIMIT_NAME = 100
             let allProducts = await wordpressService.searchProductsInWordPress(cleanMessage, SEARCH_LIMIT_NAME)
-            if (!allProducts || allProducts.length === 0) {
-              allProducts = await wordpressService.getAllProducts()
-            } else if (allProducts.length >= SEARCH_LIMIT_NAME) {
-              allProducts = await wordpressService.getAllProducts()
+            if (shouldSkipFullCatalog) {
+              if (!allProducts || allProducts.length === 0) {
+                allProducts = []
+                console.log('[WooCommerce] ⚠️ No-búsqueda sin resultados API → omitiendo catálogo completo')
+              }
+              // Si ya hay resultados (p. ej. < 100), mantenerlos; no pedir catálogo completo
+            } else {
+              if (!allProducts || allProducts.length === 0) {
+                allProducts = await wordpressService.getCatalogStructure()
+              } else if (allProducts.length >= SEARCH_LIMIT_NAME) {
+                allProducts = await wordpressService.getCatalogStructure()
+              }
             }
             if (allProducts && allProducts.length > 0) {
               console.log(`[WooCommerce] ✅ Obtenidos ${allProducts.length} productos de WooCommerce`)
@@ -2363,7 +2497,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
               )
               
               if (fullNameMatch.status === 'FOUND') {
-                productStockData = fullNameMatch.product.originalProduct
+                productStockData = await wordpressService.enrichProductWithStockPrice(fullNameMatch.product.originalProduct)
                 context.productStockData = productStockData
                 session.currentProduct = productStockData
                 console.log(`[WooCommerce] ✅ Producto encontrado por nombre completo: ${productStockData.name}`)
@@ -2386,7 +2520,8 @@ export async function processMessageWithAI(userId, message, options = {}) {
                 
                 context.productStockData = productStockData
               } else if (fullNameMatch.status === 'AMBIGUOUS') {
-                productSearchResults = fullNameMatch.ambiguousProducts.map(m => m.originalProduct)
+                const ambiguous = fullNameMatch.ambiguousProducts.map(m => m.originalProduct)
+                productSearchResults = await wordpressService.enrichProductsWithStockPrice(ambiguous, 5)
                 context.productSearchResults = productSearchResults
                 console.log(`[WooCommerce] ⚠️  Múltiples productos con nombre completo (${productSearchResults.length})`)
               }
@@ -2451,7 +2586,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
                   console.log(`[WooCommerce] ⚠️  No se encontró producto con SKU "${detectedSkuFromName}", buscando código en nombres/SKU...`)
                   // Fallback: buscar el código detectado en nombres/SKU normalizados
                   try {
-                    const allProducts = await wordpressService.getAllProducts()
+                    const allProducts = await wordpressService.getCatalogStructure()
                     const normalizedCode = normalizeCode(detectedSkuFromName)
                     const productsWithCode = allProducts.filter(p => {
                       const productName = normalizeCode(p.name || '')
@@ -2460,16 +2595,16 @@ export async function processMessageWithAI(userId, message, options = {}) {
                     })
                     
                     if (productsWithCode.length === 1) {
-                      productStockData = productsWithCode[0]
+                      productStockData = await wordpressService.enrichProductWithStockPrice(productsWithCode[0])
                       context.productStockData = productStockData
-                      session.currentProduct = productsWithCode[0]
+                      session.currentProduct = productStockData
                       console.log(`[WooCommerce] ✅ Producto encontrado por código en nombre/SKU: ${productStockData.name} (SKU real: ${productStockData.sku || 'N/A'})`)
                     } else if (productsWithCode.length > 1) {
                       const exactMatchesName = productsWithCode.filter(p => productMatchesCodeExactly(p, detectedSkuFromName))
                       if (exactMatchesName.length === 1) {
-                        productStockData = exactMatchesName[0]
+                        productStockData = await wordpressService.enrichProductWithStockPrice(exactMatchesName[0])
                         context.productStockData = productStockData
-                        session.currentProduct = exactMatchesName[0]
+                        session.currentProduct = productStockData
                         console.log(`[WooCommerce] ✅ Un solo match exacto para "${detectedSkuFromName}": ${productStockData.name} (SKU: ${productStockData.sku || 'N/A'})`)
                       } else {
                         const sortedName = [...productsWithCode].sort((a, b) => {
@@ -2477,7 +2612,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
                           const bExact = productMatchesCodeExactly(b, detectedSkuFromName) ? 1 : 0
                           return bExact - aExact
                         })
-                        productSearchResults = sortedName.slice(0, 10)
+                        productSearchResults = await wordpressService.enrichProductsWithStockPrice(sortedName.slice(0, 10), 5)
                         context.productSearchResults = productSearchResults
                         console.log(`[WooCommerce] ✅ Encontrados ${productsWithCode.length} productos que contienen "${detectedSkuFromName}" en nombre/SKU`)
                       }
@@ -2551,14 +2686,21 @@ export async function processMessageWithAI(userId, message, options = {}) {
                   // Rápido: búsqueda WooCommerce (1 petición). Catálogo completo solo si hace falta (0 resultados o 100 = puede haber más).
                   const SEARCH_LIMIT = 100
                   let allProducts = await wordpressService.searchProductsInWordPress(termToUse, SEARCH_LIMIT)
-                  if (!allProducts || allProducts.length === 0) {
-                    console.log(`[WooCommerce] Búsqueda rápida sin resultados → obteniendo catálogo completo...`)
-                    allProducts = await wordpressService.getAllProducts()
-                  } else if (allProducts.length >= SEARCH_LIMIT) {
-                    console.log(`[WooCommerce] Búsqueda rápida devolvió ${SEARCH_LIMIT} (puede haber más) → catálogo completo para no perder coincidencias`)
-                    allProducts = await wordpressService.getAllProducts()
+                  if (shouldSkipFullCatalog) {
+                    if (!allProducts || allProducts.length === 0) {
+                      allProducts = []
+                      console.log('[WooCommerce] ⚠️ No-búsqueda sin resultados API → omitiendo catálogo completo')
+                    }
                   } else {
-                    console.log(`[WooCommerce] Búsqueda rápida: ${allProducts.length} productos para "${termToUse}"`)
+                    if (!allProducts || allProducts.length === 0) {
+                      console.log(`[WooCommerce] Búsqueda rápida sin resultados → obteniendo catálogo completo...`)
+                      allProducts = await wordpressService.getCatalogStructure()
+                    } else if (allProducts.length >= SEARCH_LIMIT) {
+                      console.log(`[WooCommerce] Búsqueda rápida devolvió ${SEARCH_LIMIT} (puede haber más) → catálogo completo para no perder coincidencias`)
+                      allProducts = await wordpressService.getCatalogStructure()
+                    } else {
+                      console.log(`[WooCommerce] Búsqueda rápida: ${allProducts.length} productos para "${termToUse}"`)
+                    }
                   }
                   if (allProducts && allProducts.length > 0) {
                       // RECOMENDACION: no usar matcher exacto; mostrar siempre lista de hasta 5 productos por contexto
@@ -2590,7 +2732,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
                         }
                         const recomendacionList = partialMatches.slice(0, 5)
                         if (recomendacionList.length > 0) {
-                          productSearchResults = recomendacionList
+                          productSearchResults = await ensureListEnriched(recomendacionList)
                           context.productSearchResults = productSearchResults
                           console.log(`[WooCommerce] RECOMENDACION: ${recomendacionList.length} productos para "${termToUse}"`)
                         } else {
@@ -2613,8 +2755,8 @@ export async function processMessageWithAI(userId, message, options = {}) {
                     console.log(`[WooCommerce] Resultado del matching determinístico: ${matchResult.status}`)
                     
                     if (matchResult.status === 'FOUND') {
-                      // Coincidencia exacta única: usar el producto encontrado
-                      productStockData = matchResult.product.originalProduct
+                      // Coincidencia exacta única: usar el producto encontrado (enriquecer con stock/precio en tiempo real)
+                      productStockData = await wordpressService.enrichProductWithStockPrice(matchResult.product.originalProduct)
                       context.productStockData = productStockData
                       session.currentProduct = productStockData
                       console.log(`[WooCommerce] ✅ Producto encontrado por matching determinístico: ${productStockData.name} (SKU: ${productStockData.sku || 'N/A'})`)
@@ -2638,9 +2780,10 @@ export async function processMessageWithAI(userId, message, options = {}) {
                       context.productStockData = productStockData
                       context.productSearchResults = [productStockData]
                     } else if (matchResult.status === 'AMBIGUOUS') {
-                      // Múltiples coincidencias exactas: listar productos ambiguos
+                      // Múltiples coincidencias exactas: listar productos ambiguos (enriquecer los que se muestran)
                       console.log(`[WooCommerce] ⚠️  Múltiples productos con coincidencia exacta (${matchResult.ambiguousProducts.length}), se listarán para confirmación`)
-                      productSearchResults = matchResult.ambiguousProducts.map(m => m.originalProduct)
+                      const ambiguous = matchResult.ambiguousProducts.map(m => m.originalProduct)
+                      productSearchResults = await wordpressService.enrichProductsWithStockPrice(ambiguous, 5)
                       context.productSearchResults = productSearchResults
                     } else {
                     // NOT_FOUND: no hay coincidencia exacta, buscar productos que contengan el término
@@ -2733,7 +2876,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
                         }).sort((a, b) => b.termsMatched - a.termsMatched || b.score - a.score)
                         const topMatches = scoredMatches.slice(0, 10).map(m => m.product)
                         console.log(`[WooCommerce] ✅ Encontrados ${partialMatches.length} productos relevantes para "${termToUse}" (mostrando top ${topMatches.length})`)
-                        productSearchResults = topMatches
+                        productSearchResults = await ensureListEnriched(topMatches)
                         context.productSearchResults = productSearchResults
                         console.log(`[WooCommerce] Productos encontrados: ${topMatches.map(p => p.name).join(', ')}`)
                       } else {
@@ -2772,8 +2915,8 @@ export async function processMessageWithAI(userId, message, options = {}) {
                   if (!sample || sample.length === 0) sample = await wordpressService.getProductsSample(20)
                   const list = (Array.isArray(sample) ? sample : []).slice(0, 5)
                   if (list.length > 0) {
-                    productSearchResults = list
-                    context.productSearchResults = list
+                    productSearchResults = await ensureListEnriched(list)
+                    context.productSearchResults = productSearchResults
                     console.log(`[WooCommerce] RECOMENDACION sin término: ${list.length} productos de muestra`)
                   }
                 } catch (e) {
@@ -2858,9 +3001,9 @@ export async function processMessageWithAI(userId, message, options = {}) {
       const finalSearchResults = context.productSearchResults || productSearchResults || []
       // Un solo resultado: afirmar producto y fijar contexto (no pedir confirmación). RECOMENDACION siempre muestra lista (aunque sea de 1).
       if (!productStockData && finalSearchResults.length === 1 && queryType !== 'RECOMENDACION') {
-        productStockData = finalSearchResults[0]
+        productStockData = await ensureProductEnriched(finalSearchResults[0])
         context.productStockData = productStockData
-        session.currentProduct = finalSearchResults[0]
+        session.currentProduct = productStockData
         session.productVariations = null
         session.lastShownResults = null
         session.lastSearchTerm = null
@@ -2915,9 +3058,9 @@ export async function processMessageWithAI(userId, message, options = {}) {
     // Si no hay producto en contexto pero acabamos de mostrar una lista: 1 resultado = usarlo; varios = pedir "de cuál"
     if (!tieneProductoEnContexto && !tieneSkuOTermino && lastShown.length > 0) {
       if (lastShown.length === 1) {
-        productStockData = lastShown[0]
+        productStockData = await wordpressService.enrichProductWithStockPrice(lastShown[0])
         context.productStockData = productStockData
-        session.currentProduct = lastShown[0]
+        session.currentProduct = productStockData
         session.productVariations = null
         session.lastShownResults = null
         session.lastSearchTerm = null
@@ -3098,20 +3241,25 @@ export async function processMessageWithAI(userId, message, options = {}) {
           // Normalizar atributo y valor para búsqueda (ya validados en el if)
           const atributoNormalizado = (analisisOpenAI.atributo || '').toLowerCase().trim()
           const valorNormalizado = (analisisOpenAI.valorAtributo || '').toLowerCase().trim()
-          
+          const attrNameMatches = (attrName) => {
+            const n = (attrName || '').toLowerCase().trim()
+            if (!n || !atributoNormalizado) return false
+            if (n === atributoNormalizado) return true
+            const nSinPa = n.replace(/^pa_/, '')
+            if (nSinPa === atributoNormalizado) return true
+            if (n.includes(atributoNormalizado) || atributoNormalizado.includes(nSinPa)) return true
+            return false
+          }
           // OPTIMIZACIÓN: Primero verificar en attributes del producto padre si existe el atributo
           let atributoExisteEnPadre = false
           if (productStockData.attributes && Array.isArray(productStockData.attributes)) {
             atributoExisteEnPadre = productStockData.attributes.some(attr => {
               const attrName = (attr.name || '').toLowerCase().trim()
-              if (attrName === atributoNormalizado && attr.options && Array.isArray(attr.options)) {
-                // Verificar si el valor existe en las opciones
-                return attr.options.some(opt => {
-                  const optValue = (opt || '').toLowerCase().trim()
-                  return optValue === valorNormalizado
-                })
-              }
-              return false
+              if (!attrNameMatches(attrName) || !attr.options || !Array.isArray(attr.options)) return false
+              return attr.options.some(opt => {
+                const optValue = (opt || '').toLowerCase().trim()
+                return optValue === valorNormalizado
+              })
             })
           }
           
@@ -3132,16 +3280,14 @@ export async function processMessageWithAI(userId, message, options = {}) {
             // CRÍTICO: Guardar también en sesión para que persistan entre mensajes
             session.productVariations = variations
 
-            // Buscar variación que coincida con el atributo y valor solicitados
+            // Buscar variación que coincida con el atributo y valor solicitados (match flexible de nombre de atributo)
             const varianteEncontrada = variations.find(variation => {
               if (!variation || !variation.attributes || !Array.isArray(variation.attributes)) return false
 
               return variation.attributes.some(attr => {
                 const attrName = (attr.name || '').toLowerCase().trim()
                 const attrValue = (attr.option || '').toLowerCase().trim()
-                
-                // Verificar coincidencia exacta de atributo y valor (ya normalizados)
-                return attrName === atributoNormalizado && attrValue === valorNormalizado
+                return attrNameMatches(attrName) && attrValue === valorNormalizado
               })
             })
             
@@ -3476,7 +3622,38 @@ Informa al cliente de forma empática que no se encontró el producto.
           const atributo = context.variantesDisponibles.atributo || 'atributo'
           const valores = context.variantesDisponibles.valores
           const valoresStr = valores.join(', ')
-          
+          const atributoNorm = (atributo || '').toLowerCase().trim()
+          let significadoValores = ''
+          if (context.productVariations && context.productVariations.length > 0 && valores.length > 0) {
+            try {
+              const optionDisplayNamesMap = await wordpressService.resolveAttributeOptionDisplayNames(context.productVariations)
+              let attrNameForLookup = null
+              for (const v of context.productVariations) {
+                if (!v?.attributes) continue
+                for (const a of v.attributes) {
+                  const n = (a.name || '').toLowerCase().trim()
+                  if (n === atributoNorm || n.includes(atributoNorm) || n.replace(/^pa_/, '').includes(atributoNorm)) {
+                    attrNameForLookup = a.name
+                    break
+                  }
+                }
+                if (attrNameForLookup) break
+              }
+              if (optionDisplayNamesMap && optionDisplayNamesMap.size > 0 && attrNameForLookup) {
+                const partes = []
+                for (const v of valores) {
+                  const key = buildAttributeOptionKey(attrNameForLookup, v)
+                  const displayName = optionDisplayNamesMap.get(key)
+                  if (displayName && String(displayName).trim() && String(displayName).toLowerCase() !== String(v).toLowerCase().trim()) {
+                    partes.push(`${v} = ${displayName.trim()}`)
+                  }
+                }
+                if (partes.length > 0) significadoValores = '\n- Significado de cada valor (indica esto si el cliente pregunta "qué es A/B/C" o "qué tamaño es la A"): ' + partes.join(', ')
+              }
+            } catch (e) {
+              console.warn('[WooCommerce] No se pudieron resolver nombres de opciones para variantes:', e?.message)
+            }
+          }
           const historyContext = getHistoryContext(session)
           
           textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
@@ -3486,18 +3663,18 @@ Informa al cliente de forma empática que no se encontró el producto.
 - SKU: ${productStockData.sku || 'N/A'}
 - Stock: ${stockInfo}
 - Precio: ${priceInfo}
-- ${atributo.charAt(0).toUpperCase() + atributo.slice(1)}s disponibles: ${valoresStr}
+- ${atributo.charAt(0).toUpperCase() + atributo.slice(1)}s disponibles: ${valoresStr}${significadoValores}
 
 El cliente preguntó: "${message}"${historyContext}
 
 🎯 OBJETIVO:
-Presenta los ${atributo}s disponibles con jerarquía visual clara (formato chat-friendly).
+Presenta los ${atributo}s disponibles con jerarquía visual clara (formato chat-friendly). Si hay "Significado de cada valor" arriba, inclúyelo en la lista (ej. "• A (21 cm)", "• B (500 ml)") para que quede claro qué es cada opción.
 
 FORMATO SUGERIDO:
 - Línea de confirmación: "Sí, tenemos el [producto] disponible."
 - 📦 Stock: [valor exacto]
 - 💰 Precio: [valor si está disponible]
-- 🎨 ${atributo.charAt(0).toUpperCase() + atributo.slice(1)}s disponibles: lista con viñetas • (una por valor). Usa SOLO: ${valoresStr}
+- 🎨 ${atributo.charAt(0).toUpperCase() + atributo.slice(1)}s disponibles: lista con viñetas • (una por valor). Usa SOLO: ${valoresStr}${significadoValores ? ' e indica entre paréntesis el significado cuando exista (ej. A (21 cm))' : ''}
 - 👉 Cierre: "Dime qué ${atributo} y cantidad necesitas y lo reviso al tiro" o similar.
 
 ✅ DATOS QUE DEBES USAR (OBLIGATORIO):
@@ -3505,6 +3682,7 @@ FORMATO SUGERIDO:
 - Incluye stock: ${stockInfo} (usa este valor exacto)
 - Incluye precio si está disponible: ${priceInfo}
 - NO cambies nombres, SKUs, precios ni valores de ${atributo}
+- Si el cliente pregunta "qué tamaño es la A" o "qué significa B", responde con el significado indicado arriba (ej. "La A equivale a 21 cm")
 
 🚫 RESTRICCIONES CRÍTICAS:
 - NO inventes ${atributo}s que no estén en la lista: ${valoresStr}
