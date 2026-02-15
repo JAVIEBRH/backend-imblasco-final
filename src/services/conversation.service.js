@@ -25,6 +25,7 @@ import * as cartService from './cart.service.js'
 import * as orderService from './order.service.js'
 import * as conkavoAI from './conkavo-ai.service.js'
 import * as wordpressService from './wordpress.service.js'
+import * as stockfService from './stockf.service.js'
 import * as companyInfoService from './company-info.service.js'
 import * as productMatcher from './product-matcher.service.js'
 import { getAttributeDisplayValue, buildAttributeOptionKey } from '../utils/attribute-value.js'
@@ -669,18 +670,50 @@ function addToHistory(session, sender, message) {
 }
 
 /**
- * Crear respuesta estándar
+ * Crear respuesta estándar.
+ * product y productSearchResults son opcionales; solo se añaden al objeto si tienen valor útil.
  */
-function createResponse(message, state, options = null, cart = null) {
+function createResponse(message, state, options = null, cart = null, product = null, productSearchResults = null) {
   // Formatear carrito para la respuesta
   const cartFormatted = cart && cart.items ? Object.values(cart.items) : (cart || {})
-  
-  return {
+  const out = {
     botMessage: message,
     state,
     options,
     cart: cartFormatted
   }
+  if (product != null) out.product = product
+  if (Array.isArray(productSearchResults) && productSearchResults.length > 0) out.productSearchResults = productSearchResults
+  return out
+}
+
+/**
+ * Bloque de texto para el prompt con datos de stockf (coming_soon, caracteristicas, excerpt).
+ * @param {Object} productOrEnrichment - Producto enriquecido o objeto { coming_soon, caracteristicas, excerpt }
+ * @returns {string}
+ */
+function formatStockfBlockForPrompt(productOrEnrichment) {
+  if (!productOrEnrichment || typeof productOrEnrichment !== 'object') return ''
+  const parts = []
+  const cs = productOrEnrichment.coming_soon
+  if (cs && cs.activo && cs.fecha) {
+    parts.push(`Próxima llegada: ${cs.fecha}`)
+  }
+  const car = productOrEnrichment.caracteristicas
+  if (car && typeof car === 'object' && Object.keys(car).length > 0) {
+    const specs = Object.entries(car)
+      .filter(([, v]) => v != null && String(v).trim() !== '')
+      .map(([k, v]) => `${k}: ${v}`)
+      .join('; ')
+    if (specs) parts.push(`Especificaciones: ${specs}`)
+  }
+  const excerpt = productOrEnrichment.excerpt
+  if (excerpt && typeof excerpt === 'string' && excerpt.trim()) {
+    const plain = excerpt.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 300)
+    if (plain) parts.push(`Información adicional / personalización: ${plain}`)
+  }
+  if (parts.length === 0) return ''
+  return '\n- ' + parts.join('\n- ')
 }
 
 /**
@@ -3456,6 +3489,25 @@ export async function processMessageWithAI(userId, message, options = {}) {
   let aiResponse = ''
   
   try {
+    // Enriquecimiento desde stockf (solo lectura): coming_soon, caracteristicas, excerpt, etc.
+    try {
+      if (context.productStockData) {
+        const { enrichment, hiddenByFlags } = await stockfService.getProductEnrichment(context.productStockData)
+        if (hiddenByFlags) {
+          context.productStockData = null
+          productStockData = null
+        } else if (enrichment && typeof enrichment === 'object') {
+          context.productStockData = { ...context.productStockData, ...enrichment }
+        }
+      }
+      if (context.productSearchResults && Array.isArray(context.productSearchResults) && context.productSearchResults.length > 0) {
+        const enriched = await stockfService.enrichProductList(context.productSearchResults, 5)
+        context.productSearchResults = enriched
+      }
+    } catch (errStockf) {
+      console.warn('[stockf] Enriquecimiento omitido:', errStockf?.message)
+    }
+
     // DETECTAR TIPO DE CONSULTA Y ARMAR TEXTO PARA LA IA
     // queryType ya fue decidido por OpenAI o regex arriba
     // Usuario no logueado pidiendo productos/precios/stock/variantes: no revelar info sensible; derivar a solicitud de cuenta
@@ -3715,7 +3767,7 @@ INFORMACIÓN REAL DEL PRODUCTO (consultada desde WooCommerce en tiempo real):
 ${productStockData.sku ? `- SKU: ${productStockData.sku}` : ''}
 - ${atributo.charAt(0).toUpperCase() + atributo.slice(1)}: ${valorAtributo}
 - Stock: ${stockInfo}
-- Precio: ${formatPrecioParaCliente(productStockData.price)}
+- Precio: ${formatPrecioParaCliente(productStockData.price)}${formatStockfBlockForPrompt(productStockData)}
 
 El cliente preguntó: "${message}"
 
@@ -4010,7 +4062,7 @@ INFORMACIÓN REAL DEL PRODUCTO (consultada desde WooCommerce en tiempo real):
 - Nombre del producto: ${productStockData.name}
 ${productStockData.sku ? `- SKU: ${productStockData.sku}` : ''}
 - Stock: ${stockInfo}
-- Precio: ${priceInfo}${parentInfo}${variationsInfo}${extraProductInfo ? '\n' + extraProductInfo : ''}${bloqueDescripcion}${bloqueExtraDetalles}
+- Precio: ${priceInfo}${parentInfo}${variationsInfo}${extraProductInfo ? '\n' + extraProductInfo : ''}${formatStockfBlockForPrompt(productStockData)}${bloqueDescripcion}${bloqueExtraDetalles}
 
 MÉTODO DE BÚSQUEDA: ${searchMethod}
 NIVEL DE CONFIANZA: ${confidenceLevel}
@@ -4076,7 +4128,8 @@ INSTRUCCIONES OBLIGATORIAS:
           const stockByProductId = await enrichStockForListProducts(sliceForList)
           const productsList = sliceForList.map((p, index) => {
             const stockInfo = getStockTextForListProduct(p, stockByProductId)
-            return `${index + 1}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''} - ${formatPrecioParaCliente(p.price)} - Stock: ${stockInfo}`
+            const comingSoon = p.coming_soon?.activo && p.coming_soon?.fecha ? ` – Próxima llegada: ${p.coming_soon.fecha}` : ''
+            return `${index + 1}. ${p.name}${p.sku ? ` (SKU: ${p.sku})` : ''} - ${formatPrecioParaCliente(p.price)} - Stock: ${stockInfo}${comingSoon}`
           }).join('\n')
           
           // Obtener historial reciente para contexto
@@ -4284,12 +4337,19 @@ IMPORTANTE: Incluye al final de tu respuesta la siguiente línea de contacto par
   if (Object.keys(cart.items || {}).length > 0) {
     responseOptions.push({ type: 'action', value: ACTIONS.VIEW_CART, label: '📋 Ver Carrito' })
   }
-  
+
+  const responseProduct = context.productStockData ? { ...context.productStockData } : null
+  const responseProductSearchResults = (context.productSearchResults && Array.isArray(context.productSearchResults) && context.productSearchResults.length > 0)
+    ? context.productSearchResults
+    : null
+
   return createResponse(
       aiResponse,
       session.state,
       responseOptions.length > 0 ? responseOptions : null,
-      cart
+      cart,
+      responseProduct,
+      responseProductSearchResults
     )
   } catch (error) {
     console.error('❌ Error en processMessageWithAI:', error)

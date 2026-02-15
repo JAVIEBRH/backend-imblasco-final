@@ -422,14 +422,17 @@ chatRouter.post('/message/stream', resolveChatAuth, async (req, res, next) => {
 
       clearHeartbeat()
       const botText = response?.botMessage ?? ''
-      res.write(`data: ${JSON.stringify({
+      const streamPayload = {
         done: true,
         success: true,
         botMessage: botText,
         state: response?.state ?? null,
         options: response?.options ?? null,
         cart: response?.cart ?? null
-      })}\n\n`)
+      }
+      if (response?.product != null) streamPayload.product = response.product
+      if (Array.isArray(response?.productSearchResults) && response.productSearchResults.length > 0) streamPayload.productSearchResults = response.productSearchResults
+      res.write(`data: ${JSON.stringify(streamPayload)}\n\n`)
       res.end()
 
       console.log(`[CHAT] Guardando mensaje outbound threadId=${threadId} (stream)`)

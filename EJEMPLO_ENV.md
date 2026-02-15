@@ -8,6 +8,10 @@
 # ============================================
 DATABASE_URL=mongodb://localhost:27017/imblasco_b2b
 
+# Conexión solo lectura a la base stockf (productos con coming_soon, caracteristicas, etc.).
+# Usuario MongoDB con rol read únicamente sobre la base stockf. Si no se define, el asistente no enriquecerá con estos datos.
+# MONGO_URI_STOCKF_READ=mongodb://usuario:password@host:27017/stockf?authSource=admin
+
 # ============================================
 # OPENAI API
 # ============================================
