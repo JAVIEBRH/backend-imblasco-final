@@ -56,6 +56,40 @@ NODE_ENV=development
 - Si es local: `mongodb://localhost:27017/imblasco_b2b`
 - Si es remoto (Atlas): `mongodb+srv://usuario:password@cluster.mongodb.net/imblasco_b2b`
 
+### Cómo obtener MONGO_URI_STOCKF_READ (base stockf, solo lectura)
+
+La base **stockf** es una base MongoDB aparte (o en el mismo cluster) con la colección `productos` (coming_soon, caracteristicas, excerpt, etc.). El backend se conecta **solo lectura** para enriquecer respuestas del chat.
+
+**Pasos:**
+
+1. **Tener acceso al MongoDB** donde está la base stockf (mismo servidor/Atlas que tu app o uno distinto).
+
+2. **Crear un usuario solo lectura** para la base `stockf`:
+   - En MongoDB Atlas: **Database Access → Add New Database User**. Rol: **Read** sobre la base `stockf` (o "read on specific database" → database: `stockf`).
+   - En MongoDB local/shell:
+     ```js
+     use admin
+     db.createUser({
+       user: "stockf_read",
+       pwd: "tu_password_seguro",
+       roles: [ { role: "read", db: "stockf" } ]
+     })
+     ```
+
+3. **Armar la URI** con ese usuario:
+   - **Local:** `mongodb://stockf_read:tu_password_seguro@localhost:27017/stockf?authSource=admin`
+   - **Atlas:** `mongodb+srv://stockf_read:tu_password_seguro@cluster.xxxxx.mongodb.net/stockf?retryWrites=true&w=majority`
+   - Sustituye usuario, contraseña y host por los tuyos. Si el usuario se creó en la base `admin`, deja `authSource=admin`.
+
+4. **Añadir al .env** (en la raíz del backend, junto a DATABASE_URL):
+   ```env
+   MONGO_URI_STOCKF_READ=mongodb://stockf_read:TU_PASSWORD@host:27017/stockf?authSource=admin
+   ```
+
+5. **Reiniciar el backend.** Si la URI es correcta, las respuestas del chat que incluyan productos se enriquecerán con coming_soon, caracteristicas, etc. Si no defines esta variable, el chat sigue funcionando igual pero sin esos datos.
+
+**Comprobar el esquema real de stockf:** En desarrollo puedes llamar a `GET /api/dev/stockf-schema` (solo si `NODE_ENV=development` y `MONGO_URI_STOCKF_READ` está definida). La respuesta devuelve los nombres de los campos de un documento de ejemplo para verificar que coinciden con lo que espera el backend (sku, mysql_id, coming_soon, caracteristicas, excerpt, flags, etc.).
+
 ## ⚠️ IMPORTANTE
 
 - **NUNCA** subas el archivo `.env` a Git

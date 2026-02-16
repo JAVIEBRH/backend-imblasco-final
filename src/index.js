@@ -49,6 +49,10 @@ console.log(
   process.env.DATABASE_URL ? "✅ definido" : "❌ no definido"
 );
 console.log(
+  "  MONGO_URI_STOCKF_READ:",
+  process.env.MONGO_URI_STOCKF_READ ? "✅ definido (enriquecimiento stockf activo)" : "⏭️ no definido (chat sin datos stockf)"
+);
+console.log(
   "  OPENAI_API_KEY:",
   process.env.OPENAI_API_KEY ? "✅ definido" : "❌ no definido"
 );
@@ -138,6 +142,98 @@ app.get("/api/health/openai", async (req, res) => {
     });
   }
 });
+
+// Ruta de desarrollo: inspeccionar esquema de stockf (solo NODE_ENV=development)
+if (process.env.NODE_ENV === "development") {
+  app.get("/api/dev/stockf-schema", async (req, res) => {
+    const uriDefined = !!(process.env.MONGO_URI_STOCKF_READ || process.env.MONGO_URI_STOCKF);
+    try {
+      const { getStockfConnectionReadyWithError } = await import(
+        "./config/stockf-database.js"
+      );
+      const { conn, error: connError } = await getStockfConnectionReadyWithError();
+      if (!conn) {
+        return res.json({
+          ok: false,
+          uriDefined,
+          connectionError: connError || "Conexión falló sin mensaje",
+          message: uriDefined
+            ? "La conexión a stockf falló. Abajo 'connectionError' tiene el motivo exacto de MongoDB."
+            : "MONGO_URI_STOCKF_READ no está en .env o el servidor no se reinició.",
+        });
+      }
+      const col = conn.db.collection("productos");
+      const sample = await col.findOne({});
+      const count = await col.countDocuments();
+      if (!sample) {
+        return res.json({
+          ok: true,
+          message: "Colección productos existe pero está vacía.",
+          count: 0,
+          keys: [],
+        });
+      }
+      const keys = Object.keys(sample);
+      res.json({
+        ok: true,
+        count,
+        keys,
+        sampleKeysOnly: keys.reduce((acc, k) => {
+          acc[k] = sample[k] === null ? "null" : typeof sample[k];
+          return acc;
+        }, {}),
+      });
+    } catch (err) {
+      res.status(500).json({
+        ok: false,
+        uriDefined,
+        error: err.message,
+        message: "Error al leer stockf.productos. Revisa MONGO_URI_STOCKF_READ y permisos en Atlas.",
+      });
+    }
+  });
+
+  app.get("/api/dev/stockf-sample-products", async (req, res) => {
+    try {
+      const { getStockfConnectionReadyWithError } = await import(
+        "./config/stockf-database.js"
+      );
+      const { conn, error: connError } = await getStockfConnectionReadyWithError();
+      if (!conn) return res.json({ ok: false, connectionError: connError });
+      const col = conn.db.collection("productos");
+      const limit = 10;
+      const comingSoon = await col
+        .find({ "coming_soon.activo": true, "flags.visible": { $ne: false } })
+        .project({ titulo: 1, sku: 1, mysql_id: 1, coming_soon: 1 })
+        .limit(limit)
+        .toArray();
+      const withCaracteristicas = await col
+        .find({ caracteristicas: { $exists: true, $ne: null }, "flags.visible": { $ne: false } })
+        .project({ titulo: 1, sku: 1, mysql_id: 1, caracteristicas: 1, excerpt: 1 })
+        .limit(limit)
+        .toArray();
+      const withImagen = await col
+        .find({ imagen: { $exists: true, $ne: null }, "flags.visible": { $ne: false } })
+        .project({ titulo: 1, sku: 1, mysql_id: 1, imagen: 1 })
+        .limit(3)
+        .toArray();
+      res.json({
+        ok: true,
+        comingSoon,
+        withImagen: withImagen.map((p) => ({ titulo: p.titulo, sku: p.sku, mysql_id: p.mysql_id, imagen: p.imagen })),
+        withCaracteristicas: withCaracteristicas.map((p) => ({
+          titulo: p.titulo,
+          sku: p.sku,
+          mysql_id: p.mysql_id,
+          tieneCaracteristicas: !!p.caracteristicas && Object.keys(p.caracteristicas || {}).length > 0,
+          tieneExcerpt: !!(p.excerpt && String(p.excerpt).trim()),
+        })),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+}
 
 // Routes
 app.use("/", indexRouter); // Página de administración

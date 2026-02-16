@@ -6,7 +6,6 @@
 
 import mongoose from 'mongoose'
 
-const STOCKF_URI = process.env.MONGO_URI_STOCKF_READ || process.env.MONGO_URI_STOCKF || ''
 const CONNECT_OPTIONS = {
   serverSelectionTimeoutMS: 5000,
   socketTimeoutMS: 10000,
@@ -15,20 +14,26 @@ const CONNECT_OPTIONS = {
 
 let stockfConnection = null
 
+function getStockfUri() {
+  return process.env.MONGO_URI_STOCKF_READ || process.env.MONGO_URI_STOCKF || ''
+}
+
 /**
  * Obtiene la conexión a la base stockf. Devuelve null si MONGO_URI_STOCKF_READ no está definida.
  * La conexión se establece en background; para operaciones usar getStockfConnectionReady().
+ * La URI se lee en cada llamada para no depender del orden de carga del .env.
  * @returns {mongoose.Connection | null}
  */
 export function getStockfConnection() {
-  if (!STOCKF_URI || STOCKF_URI.trim() === '') {
+  const uri = getStockfUri()
+  if (!uri || uri.trim() === '') {
     return null
   }
   if (stockfConnection) {
     return stockfConnection
   }
   try {
-    stockfConnection = mongoose.createConnection(STOCKF_URI, CONNECT_OPTIONS)
+    stockfConnection = mongoose.createConnection(uri, CONNECT_OPTIONS)
     stockfConnection.on('error', (err) => {
       console.warn('[stockf] Conexión error:', err?.message)
     })
@@ -55,6 +60,21 @@ export async function getStockfConnectionReady() {
   } catch (err) {
     console.warn('[stockf] Conexión no disponible:', err?.message)
     return null
+  }
+}
+
+/**
+ * Para diagnóstico: intenta conectar y devuelve { conn, error }. No exponer en producción.
+ * @returns {Promise<{ conn: mongoose.Connection | null, error: string | null }>}
+ */
+export async function getStockfConnectionReadyWithError() {
+  const conn = getStockfConnection()
+  if (!conn) return { conn: null, error: 'MONGO_URI_STOCKF_READ no definida' }
+  try {
+    await conn.asPromise()
+    return { conn, error: null }
+  } catch (err) {
+    return { conn: null, error: err?.message || String(err) }
   }
 }
 

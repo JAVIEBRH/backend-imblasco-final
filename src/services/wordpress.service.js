@@ -18,6 +18,16 @@ function getWooCommerceConfig() {
   return { WC_URL, WC_KEY, WC_SECRET }
 }
 
+/** Convierte URL de imagen relativa a absoluta usando WC_URL */
+function toAbsoluteImageUrl(url) {
+  if (!url || typeof url !== 'string') return url
+  const trimmed = url.trim()
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed
+  const { WC_URL } = getWooCommerceConfig()
+  if (trimmed.startsWith('/')) return `${WC_URL.replace(/\/$/, '')}${trimmed}`
+  return trimmed
+}
+
 // Log de depuración para verificar carga de variables (ejecutar después de que dotenv se carga)
 // Usar setTimeout para ejecutar después de que el módulo se haya cargado completamente
 setTimeout(() => {
@@ -266,6 +276,11 @@ export async function getProductStock(identifier) {
       : null
     
     const available = product.stock_status === 'instock' || (stockQuantity !== null && stockQuantity > 0)
+
+    const rawImages = product.images || []
+    const firstSrc = rawImages[0]?.src ?? null
+    const image = firstSrc ? toAbsoluteImageUrl(firstSrc) : null
+    const images = rawImages.map((img) => (img?.src ? { ...img, src: toAbsoluteImageUrl(img.src) } : img))
     
     return {
       available,
@@ -284,7 +299,9 @@ export async function getProductStock(identifier) {
       categories: product.categories || [],
       weight: product.weight != null ? String(product.weight).trim() || null : null,
       dimensions: parseDimensions(product.dimensions),
-      tags: parseTags(product.tags)
+      tags: parseTags(product.tags),
+      images,
+      image
     }
   } catch (error) {
     console.error('Error obteniendo stock del producto:', error.message)
@@ -472,7 +489,9 @@ export async function enrichProductWithStockPrice(product) {
       stock_status: full.stock_status,
       available: full.available,
       manage_stock: full.manage_stock,
-      attributes: full.attributes || product.attributes || []
+      attributes: full.attributes || product.attributes || [],
+      image: full.image,
+      images: full.images
     }
     stockPriceCache.set(product.id, { data, timestamp: now })
     return { ...product, ...data }
@@ -507,27 +526,35 @@ export async function searchProductsInWordPress(searchTerm, limit = 10) {
     if (!Array.isArray(products)) {
       return []
     }
-    
-    return products.map(product => ({
-      id: product.id,
-      name: product.name || '',
-      sku: product.sku || '',
-      price: product.price ? parseFloat(product.price) : null,
-      stock_quantity: product.stock_quantity !== null && product.stock_quantity !== undefined 
-        ? parseStockQuantity(product.stock_quantity) 
-        : null,
-      stock_status: product.stock_status || 'unknown',
-      manage_stock: product.manage_stock || false,
-      available: product.stock_status === 'instock' || (product.stock_quantity != null && parseStockQuantity(product.stock_quantity) > 0),
-      type: product.type || 'simple',
-      description: product.description || '',
-      short_description: product.short_description || '',
-      attributes: product.attributes || [],
-      categories: product.categories || [],
-      weight: product.weight != null ? String(product.weight).trim() || null : null,
-      dimensions: parseDimensions(product.dimensions),
-      tags: parseTags(product.tags)
-    }))
+
+    return products.map(product => {
+      const rawImages = product.images || []
+      const firstSrc = rawImages[0]?.src ?? null
+      const image = firstSrc ? toAbsoluteImageUrl(firstSrc) : null
+      const images = rawImages.map((img) => (img?.src ? { ...img, src: toAbsoluteImageUrl(img.src) } : img))
+      return {
+        id: product.id,
+        name: product.name || '',
+        sku: product.sku || '',
+        price: product.price ? parseFloat(product.price) : null,
+        stock_quantity: product.stock_quantity !== null && product.stock_quantity !== undefined 
+          ? parseStockQuantity(product.stock_quantity) 
+          : null,
+        stock_status: product.stock_status || 'unknown',
+        manage_stock: product.manage_stock || false,
+        available: product.stock_status === 'instock' || (product.stock_quantity != null && parseStockQuantity(product.stock_quantity) > 0),
+        type: product.type || 'simple',
+        description: product.description || '',
+        short_description: product.short_description || '',
+        attributes: product.attributes || [],
+        categories: product.categories || [],
+        weight: product.weight != null ? String(product.weight).trim() || null : null,
+        dimensions: parseDimensions(product.dimensions),
+        tags: parseTags(product.tags),
+        images,
+        image
+      }
+    })
   } catch (error) {
     console.error('Error buscando productos:', error.message)
     return []
@@ -627,6 +654,11 @@ export async function getProductById(productId) {
       return null
     }
 
+    const rawImages = product.images || []
+    const firstSrc = rawImages[0]?.src ?? null
+    const image = firstSrc ? toAbsoluteImageUrl(firstSrc) : null
+    const images = rawImages.map((img) => (img?.src ? { ...img, src: toAbsoluteImageUrl(img.src) } : img))
+
     return {
       id: product.id,
       name: product.name || '',
@@ -646,7 +678,9 @@ export async function getProductById(productId) {
       parent_id: product.parent_id || product.parent || null,
       weight: product.weight != null ? String(product.weight).trim() || null : null,
       dimensions: parseDimensions(product.dimensions),
-      tags: parseTags(product.tags)
+      tags: parseTags(product.tags),
+      images,
+      image
     }
   } catch (error) {
     console.error(`[WooCommerce] Error obteniendo producto por ID ${productId}:`, error.message)

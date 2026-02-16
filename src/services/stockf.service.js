@@ -46,7 +46,7 @@ export async function getProductEnrichmentBySku(sku) {
     const col = conn.db.collection(COLLECTION_NAME)
     const normalized = normalizeSku(sku)
     if (!normalized) return { enrichment: null, hiddenByFlags: false }
-    const doc = await col.findOne({ sku: normalized }).maxTimeMS(3000)
+    const doc = await col.findOne({ sku: normalized }, { maxTimeMS: 3000 })
     if (!doc) return { enrichment: null, hiddenByFlags: false }
     if (doc.flags && doc.flags.visible === false) return { enrichment: null, hiddenByFlags: true }
     return { enrichment: toEnrichment(doc), hiddenByFlags: false }
@@ -68,7 +68,7 @@ export async function getProductEnrichmentByMysqlId(mysqlId) {
     const col = conn.db.collection(COLLECTION_NAME)
     const id = typeof mysqlId === 'string' ? parseInt(mysqlId, 10) : Number(mysqlId)
     if (Number.isNaN(id)) return { enrichment: null, hiddenByFlags: false }
-    const doc = await col.findOne({ mysql_id: id }).maxTimeMS(3000)
+    const doc = await col.findOne({ mysql_id: id }, { maxTimeMS: 3000 })
     if (!doc) return { enrichment: null, hiddenByFlags: false }
     if (doc.flags && doc.flags.visible === false) return { enrichment: null, hiddenByFlags: true }
     return { enrichment: toEnrichment(doc), hiddenByFlags: false }

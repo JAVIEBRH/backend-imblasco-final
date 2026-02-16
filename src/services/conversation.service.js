@@ -857,8 +857,8 @@ function parseStockQuantity(val) {
   return Math.floor(n)
 }
 
-/** Límite de productos a enriquecer con stock/precio en listas (evita exceso de llamadas API). Solo los primeros N ítems quedan con price/stock cuando la lista viene de estructura; el resto puede mostrarse como "consultar stock". */
-const MAX_PRODUCTS_TO_ENRICH_STOCK = 5
+/** Límite de productos a enriquecer con stock/precio/imagen en listas. Debe ser >= 8 para alinear con el frontend (muestra hasta 8 cards). */
+const MAX_PRODUCTS_TO_ENRICH_STOCK = 8
 
 /**
  * Indica si un producto ya tiene datos de precio/stock (vino de API completa o fue enriquecido).
@@ -1704,9 +1704,10 @@ export async function processMessageWithAI(userId, message, options = {}) {
           analisisOpenAI.necesitaMasInfo = true
         }
         
-        // Mapear tipos de OpenAI a queryType interno
-        queryType = analisisOpenAI.tipo === 'PRODUCTO' ? 'PRODUCTOS' : 
-                   analisisOpenAI.tipo === 'INFORMACION_GENERAL' ? 'INFORMACION_GENERAL' : 
+        // Mapear tipos de OpenAI a queryType interno (preservar RECOMENDACION si ya se detectó por regex, para no tratarla como búsqueda por "recomiéndame un producto")
+        const queryTypeAntesOpenAI = queryType
+        queryType = analisisOpenAI.tipo === 'PRODUCTO' ? 'PRODUCTOS' :
+                   analisisOpenAI.tipo === 'INFORMACION_GENERAL' ? 'INFORMACION_GENERAL' :
                    analisisOpenAI.tipo === 'VARIANTE' ? 'VARIANTE' :
                    analisisOpenAI.tipo === 'CARACTERISTICAS' ? 'CARACTERISTICAS' :
                    analisisOpenAI.tipo === 'FALLBACK' ? 'FALLBACK' :
@@ -1714,6 +1715,9 @@ export async function processMessageWithAI(userId, message, options = {}) {
                    analisisOpenAI.tipo === 'DERIVACION_HUMANO' ? 'DERIVACION_HUMANO' :
                    analisisOpenAI.tipo === 'RECOMENDACION' ? 'RECOMENDACION' :
                    'AMBIGUA'
+        if (queryTypeAntesOpenAI === 'RECOMENDACION') {
+          queryType = 'RECOMENDACION'
+        }
         
         // Punto 1: Unificar "más detalles/características" en PRODUCTOS salvo cuando hay producto en contexto y pregunta sobre atributo
         if (queryType === 'CARACTERISTICAS') {
@@ -2704,11 +2708,13 @@ export async function processMessageWithAI(userId, message, options = {}) {
                       termToUse = words[0]
                       console.log(`[WooCommerce] RECOMENDACION: usando primera palabra: "${termToUse}"`)
                     }
-                    // Mapear a términos que devuelvan productos esperados: empresarial/corporativo → regalo; oficina sola → regalo oficina
+                    // Mapear a términos que devuelvan productos esperados: empresarial/corporativo → regalo; oficina sola → regalo oficina; "producto"/"algo" genérico → regalo
                     const recomendacionTermMap = {
                       empresarial: 'regalo',
                       corporativo: 'regalo',
-                      oficina: 'regalo oficina'
+                      oficina: 'regalo oficina',
+                      producto: 'regalo',
+                      algo: 'regalo'
                     }
                     const termNorm = (termToUse || '').trim().toLowerCase()
                     if (recomendacionTermMap[termNorm]) {
@@ -3508,6 +3514,13 @@ export async function processMessageWithAI(userId, message, options = {}) {
       console.warn('[stockf] Enriquecimiento omitido:', errStockf?.message)
     }
 
+    // Si hay producto en contexto y el cliente pide detalles/características/especificaciones, forzar PRODUCTOS para que se use el prompt con detalle enriquecido (STOCKF) en todos los alcances (lista → eligió uno, recomendación, producto único)
+    const pideDetallesRegex = /\b(m[aá]s\s+detalles|m[aá]s\s+informaci[oó]n|qu[eé]\s+m[aá]s|describir|descripci[oó]n|caracter[ií]sticas|especificaciones|cu[eé]ntame\s+m[aá]s|detalles\s+del\b|detalles\s+del\s+producto|informaci[oó]n\s+del\s+producto|qu[eé]\s+es\s+este\s+producto)\b/i
+    if (context.productStockData && pideDetallesRegex.test((message || '').trim()) && queryType !== 'PRODUCTOS' && queryType !== 'RECOMENDACION') {
+      queryType = 'PRODUCTOS'
+      console.log('[WooCommerce] Cliente pidió detalles con producto en contexto → queryType forzado a PRODUCTOS para mostrar detalle enriquecido')
+    }
+
     // DETECTAR TIPO DE CONSULTA Y ARMAR TEXTO PARA LA IA
     // queryType ya fue decidido por OpenAI o regex arriba
     // Usuario no logueado pidiendo productos/precios/stock/variantes: no revelar info sensible; derivar a solicitud de cuenta
@@ -3999,8 +4012,8 @@ INSTRUCCIONES OBLIGATORIAS:
         const searchMethod = providedExplicitSku ? 'SKU exacto' : providedExplicitId ? 'ID exacto' : 'búsqueda por nombre'
         const confidenceLevel = providedExplicitSku || providedExplicitId ? 'ALTA (identificación exacta)' : 'MEDIA (coincidencia por nombre)'
         
-        // ¿El cliente pide más detalles / descripción del producto? (solo entonces incluimos descripción + atributos + categorías)
-        const pideMasDetalles = /\b(m[aá]s\s+detalles|m[aá]s\s+informaci[oó]n|qu[eé]\s+m[aá]s|describir|descripci[oó]n|caracter[ií]sticas|especificaciones|cu[eé]ntame\s+m[aá]s|detalles\s+del\s+producto|informaci[oó]n\s+del\s+producto|qu[eé]\s+es\s+este\s+producto)\b/i.test((message || '').trim())
+        // ¿El cliente pide más detalles / descripción del producto? (ej. "dame detalles del ni30", "más información")
+        const pideMasDetalles = /\b(m[aá]s\s+detalles|m[aá]s\s+informaci[oó]n|qu[eé]\s+m[aá]s|describir|descripci[oó]n|caracter[ií]sticas|especificaciones|cu[eé]ntame\s+m[aá]s|detalles\s+del\b|detalles\s+del\s+producto|informaci[oó]n\s+del\s+producto|qu[eé]\s+es\s+este\s+producto)\b/i.test((message || '').trim())
         const descripcionCorta = (productStockData.short_description && productStockData.short_description.trim()) || (productStockData.description && productStockData.description.trim()) || ''
         const descripcionParaDetalles = pideMasDetalles && descripcionCorta
           ? stripHtml(descripcionCorta).substring(0, 500)
@@ -4053,8 +4066,11 @@ DESCRIPCIÓN DEL PRODUCTO (resumida, máximo 500 caracteres; el cliente pidió m
 ${descripcionParaDetalles}`
             : ''
           const bloqueExtraDetalles = bloqueAtributosCategorias ? `\n${bloqueAtributosCategorias}` : ''
-          const instruccionDetalles = (descripcionParaDetalles || bloqueAtributosCategorias)
-            ? '\n- El cliente pidió MÁS DETALLES del producto. Incluye en tu respuesta un resumen o los puntos relevantes de la descripción anterior (medidas, materiales, especificaciones). Si hay atributos o categorías arriba, menciónalos si aplica. No inventes nada que no esté en la información proporcionada.'
+          const hasStockfDetail = !!(productStockData.caracteristicas && typeof productStockData.caracteristicas === 'object' && Object.keys(productStockData.caracteristicas).length > 0) ||
+            (productStockData.excerpt && String(productStockData.excerpt).trim()) ||
+            (productStockData.coming_soon && productStockData.coming_soon.activo)
+          const instruccionDetalles = (descripcionParaDetalles || bloqueAtributosCategorias || (pideMasDetalles && hasStockfDetail))
+            ? '\n- El cliente pidió MÁS DETALLES del producto. Incluye en tu respuesta: (1) resumen o puntos de la descripción si aparece arriba; (2) atributos o categorías si aparecen; (3) CRÍTICO: si en la información del producto aparecen líneas de Próxima llegada, Especificaciones o Información adicional / personalización (datos STOCKF), DEBES incluirlas en tu respuesta para que el cliente vea el detalle enriquecido. No inventes nada que no esté en la información proporcionada.'
             : ''
           textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
 
@@ -4143,25 +4159,14 @@ ${finalSearchResults.length > MAX_PRODUCTS_TO_ENRICH_STOCK ? `\n(Total: ${finalS
 
 El cliente preguntó: "${message}"${historyContext}
 
-VALIDACIONES OBLIGATORIAS ANTES DE RESPONDER:
-1. Verifica que solo menciones productos de la lista arriba
-2. Verifica que los nombres, SKUs y precios coincidan EXACTAMENTE con los de la lista
-3. NO agregues productos que no estén en la lista
-4. NO inventes información adicional
+IMPORTANTE - DISEÑO DEL MENSAJE:
+Los productos se muestran en TARJETAS (cards) debajo de tu mensaje en el chat. El usuario ya verá en cada tarjeta: nombre, SKU, precio y stock. Por tanto NO repitas esa lista en el texto.
 
-FORMATO CHAT-FRIENDLY (obligatorio para listas):
-- Para cada producto usa: nombre (y SKU si existe), luego 📦 Stock: [valor], luego 💰 Precio: [valor]. Deja una línea en blanco entre cada producto.
-- Cierre amable en una línea al final: 👉 "Dime cuál te interesa (por número, SKU o nombre) y te doy más detalles."
-
-INSTRUCCIONES OBLIGATORIAS:
-- Menciona que encontraste ${finalSearchResults.length} producto(s) relacionado(s) con "${displayQuery}"
-- Lista los productos en el orden mostrado arriba (1, 2, 3...)
-- Para cada producto, incluye: nombre, SKU (si existe), precio (si existe) y stock
-- Después de la línea del precio de cada producto, deja siempre una línea en blanco (punto aparte) antes de la frase descriptiva de ese producto
-- Pide al cliente que confirme cuál es el producto que busca (por número, SKU o nombre exacto)
-- Responde máximo 4-5 líneas, profesional, estilo WhatsApp
-- NO inventes información que no esté en la lista arriba
-- NO cambies nombres, SKUs, precios ni stock - usa EXACTAMENTE los valores proporcionados`
+Tu mensaje debe ser solo una BREVE introducción (máximo 2-3 líneas):
+- Menciona cuántos productos encontraste y con qué término (ej. "Encontré X productos relacionados con 'mochila'").
+- Una sola línea de cierre pidiendo que elija: ej. "Dime cuál te interesa (por número, SKU o nombre) y te doy más detalles."
+- Si hay más de ${MAX_PRODUCTS_TO_ENRICH_STOCK} productos, puedes añadir que hay más opciones disponibles.
+- Estilo profesional y cercano, tipo WhatsApp. NO listes nombres, SKUs, precios ni stock en el texto (eso va en las tarjetas).`
         }
         
       } else {
@@ -4238,29 +4243,14 @@ ${finalSearchResults.length > MAX_PRODUCTS_TO_ENRICH_STOCK ? `\n(Total: ${finalS
 
 El cliente preguntó: "${message}"${historyContext}
 
-VALIDACIONES OBLIGATORIAS ANTES DE RESPONDER:
-1. Verifica que solo menciones productos de la lista arriba (numerados 1, 2, 3...)
-2. Verifica que los nombres, SKUs, stocks y precios coincidan EXACTAMENTE con los de la lista
-3. NO agregues productos que no estén en la lista
-4. NO inventes información adicional
+IMPORTANTE - DISEÑO DEL MENSAJE:
+Los productos se muestran en TARJETAS (cards) debajo de tu mensaje en el chat. El usuario ya verá en cada tarjeta: nombre, SKU, precio y stock. Por tanto NO repitas esa lista en el texto.
 
-FORMATO CHAT-FRIENDLY (obligatorio para listas):
-- Para cada producto usa: nombre (y SKU si existe), luego 📦 Stock: [valor], luego 💰 Precio: [valor]. Deja una línea en blanco entre cada producto.
-- Cierre amable en una línea al final: 👉 "Dime cuál te interesa (por número, SKU o nombre) y te doy más detalles."
-
-INSTRUCCIONES OBLIGATORIAS:
-- Menciona que encontraste ${finalSearchResults.length} producto(s) relacionado(s) con "${displayQueryInner}"
-- Lista los productos en el orden mostrado arriba (1, 2, 3...)
-- Para cada producto, incluye: nombre, SKU (si existe), stock y precio
-- Después de la línea del precio de cada producto, deja siempre una línea en blanco (punto aparte) antes de la frase descriptiva de ese producto
-- Indica cuáles tienen stock disponible
-- Si hay más de ${MAX_PRODUCTS_TO_ENRICH_STOCK} productos, menciona que hay más opciones disponibles
-- Pide al cliente que confirme cuál es el producto que busca (por número, SKU o nombre exacto)
-- Responde máximo 4-5 líneas, profesional, estilo WhatsApp
-- Ofrece ayuda para buscar un producto más específico si el cliente necesita más detalles
-- NO digas "estoy verificando" - ya tienes la información real de los productos
-- NO inventes información que no esté en la lista arriba
-- NO cambies nombres, SKUs, precios ni stock - usa EXACTAMENTE los valores proporcionados`
+Tu mensaje debe ser solo una BREVE introducción (máximo 2-3 líneas):
+- Menciona cuántos productos encontraste y con qué término (ej. "Encontré X productos relacionados con '...'").
+- Una sola línea de cierre pidiendo que elija: ej. "Dime cuál te interesa (por número, SKU o nombre) y te doy más detalles."
+- Si hay más de ${MAX_PRODUCTS_TO_ENRICH_STOCK} productos, puedes añadir que hay más opciones disponibles.
+- Estilo profesional y cercano, tipo WhatsApp. NO listes nombres, SKUs, precios ni stock en el texto (eso va en las tarjetas).`
             }
         } else {
           // No se encontró nada, pedir más información
@@ -4338,10 +4328,29 @@ IMPORTANTE: Incluye al final de tu respuesta la siguiente línea de contacto par
     responseOptions.push({ type: 'action', value: ACTIONS.VIEW_CART, label: '📋 Ver Carrito' })
   }
 
+  function getImageUrl(product) {
+    return product?.images?.[0]?.src ?? product?.image ?? product?.imagen?.url ?? null
+  }
+
   const responseProduct = context.productStockData ? { ...context.productStockData } : null
   const responseProductSearchResults = (context.productSearchResults && Array.isArray(context.productSearchResults) && context.productSearchResults.length > 0)
     ? context.productSearchResults
     : null
+
+  if (responseProduct) {
+    responseProduct.imageUrl = getImageUrl(responseProduct)
+  }
+  let responseProductSearchResultsWithImageUrl = responseProductSearchResults
+    ? responseProductSearchResults.map(item => ({ ...item, imageUrl: getImageUrl(item) }))
+    : null
+
+  // Evitar duplicar card: si hay un solo producto y además está en la lista como único ítem, enviar solo product (no productSearchResults)
+  if (responseProduct && responseProductSearchResultsWithImageUrl && responseProductSearchResultsWithImageUrl.length === 1) {
+    const only = responseProductSearchResultsWithImageUrl[0]
+    if ((only.id != null && only.id === responseProduct.id) || (only.sku && responseProduct.sku && String(only.sku).trim() === String(responseProduct.sku).trim())) {
+      responseProductSearchResultsWithImageUrl = null
+    }
+  }
 
   return createResponse(
       aiResponse,
@@ -4349,7 +4358,7 @@ IMPORTANTE: Incluye al final de tu respuesta la siguiente línea de contacto par
       responseOptions.length > 0 ? responseOptions : null,
       cart,
       responseProduct,
-      responseProductSearchResults
+      responseProductSearchResultsWithImageUrl
     )
   } catch (error) {
     console.error('❌ Error en processMessageWithAI:', error)
