@@ -85,6 +85,7 @@ import { authRouter } from "./routes/auth.routes.js";
 import { indexRouter } from "./routes/index.routes.js";
 import { clientRouter } from "./routes/client.routes.js";
 import { testConnection, connect } from "./config/database.js";
+import { getStockfConnectionReady } from "./config/stockf-database.js";
 import { errorHandler, notFound } from "./middleware/errorHandler.js";
 
 const app = express();
@@ -308,6 +309,23 @@ app
       console.log("      - DATABASE_URL (o)");
       console.log("      - MONGO_HOST, MONGO_PORT, MONGO_DB, MONGO_USER, MONGO_PASSWORD");
       console.log("   3. Reinicia el servidor\n");
+    }
+
+    // Verificación STOCKF (enriquecimiento coming_soon, características, etc.)
+    const stockfUri = process.env.MONGO_URI_STOCKF_READ || process.env.MONGO_URI_STOCKF || "";
+    if (!stockfUri.trim()) {
+      console.log("📦 [STOCKF] ⏭️  No configurado (MONGO_URI_STOCKF_READ no definida) - enriquecimiento deshabilitado");
+    } else {
+      try {
+        const stockfConn = await getStockfConnectionReady();
+        if (stockfConn) {
+          console.log("📦 [STOCKF] ✅ Enriquecimiento activo (conectado)");
+        } else {
+          console.warn("📦 [STOCKF] ⚠️  URI definida pero conexión falló - enriquecimiento deshabilitado");
+        }
+      } catch (e) {
+        console.warn("📦 [STOCKF] ⚠️  Error al verificar conexión:", e?.message || e);
+      }
     }
   })
   .on("error", (err) => {

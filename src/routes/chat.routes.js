@@ -3,16 +3,15 @@
  * Endpoints para el motor conversacional basado en ACCIONES
  */
 
-// TODO: añadir rate limit por userId en POST /message
-// FIXME: revisar timeout en processMessageWithAI para respuestas lentas
-// ! Fire-and-forget de saveChatMessage no debe bloquear la respuesta al cliente
-// ? ¿Conviene cachear historial reciente por sesión?
+// Timeout: pipeline (OpenAI + WooCommerce + STOCKF) suele 15-40s en casos pesados; 120s da margen
+const MESSAGE_TIMEOUT_MS = 120000
 
 import { Router } from 'express'
 import * as conversationService from '../services/conversation.service.js'
 import { handleChat } from '../services/assistant.service.js'
 import { saveChatMessage } from '../services/chat-logger.service.js'
 import { resolveChatAuth } from '../middleware/chat-auth.js'
+import { chatRateLimit } from '../middleware/chat-rate-limit.js'
 
 export const chatRouter = Router()
 
@@ -245,7 +244,7 @@ chatRouter.post('/reset/:userId', async (req, res, next) => {
  * }
  * Header: Authorization: Bearer <token> (alternativa a body.token)
  */
-chatRouter.post('/message', resolveChatAuth, async (req, res, next) => {
+chatRouter.post('/message', chatRateLimit, resolveChatAuth, async (req, res, next) => {
   try {
     const { userId, message } = req.body
 
@@ -273,8 +272,7 @@ chatRouter.post('/message', resolveChatAuth, async (req, res, next) => {
       message: message.trim()
     }).catch(err => console.error('[CHAT] Error guardando inbound:', err?.message || err))
 
-    // Timeout: evitar cuelgues indefinidos (90 s)
-    const MESSAGE_TIMEOUT_MS = 90000
+    // Timeout: 120 s
     res.setTimeout(MESSAGE_TIMEOUT_MS, () => {
       if (!res.headersSent) {
         res.status(504).json({
@@ -335,7 +333,7 @@ chatRouter.post('/message', resolveChatAuth, async (req, res, next) => {
  * Body: { userId: string, message: string, token?: string }
  * Header: Authorization: Bearer <token> (opcional)
  */
-chatRouter.post('/message/stream', resolveChatAuth, async (req, res, next) => {
+chatRouter.post('/message/stream', chatRateLimit, resolveChatAuth, async (req, res, next) => {
   try {
     const { userId, message } = req.body
 
@@ -389,9 +387,8 @@ chatRouter.post('/message/stream', resolveChatAuth, async (req, res, next) => {
     // Si el cliente cierra la conexión, dejar de enviar heartbeats
     res.on('close', () => { clearHeartbeat() })
 
-    // Timeout: evitar cuelgues indefinidos (90 s)
-    const STREAM_TIMEOUT_MS = 90000
-    res.setTimeout(STREAM_TIMEOUT_MS, () => {
+    // Timeout: 120 s (igual que /message)
+    res.setTimeout(MESSAGE_TIMEOUT_MS, () => {
       if (!res.writableEnded) {
         clearHeartbeat()
         res.write(`data: ${JSON.stringify({

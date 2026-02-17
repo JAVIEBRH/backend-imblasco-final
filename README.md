@@ -52,9 +52,21 @@ DB_PASSWORD=tu_contraseña
 - `POST /api/stock/check` - Validar stock
 
 ### Chat
-- `POST /api/chat/init` - Inicializar chat
-- `POST /api/chat/action` - Procesar acción
-- `GET /api/chat/history/:userId` - Historial
+
+**Endpoints oficiales (chat B2B con IA – frontend actual):**
+- `POST /api/chat/message` - Enviar mensaje y recibir respuesta (con productos/cards si aplica)
+- `POST /api/chat/message/stream` - Igual que lo anterior con respuesta por Server-Sent Events (streaming)
+- `POST /api/chat/init` - Inicializar chat (mensaje de bienvenida)
+- `GET /api/chat/history/:userId` - Historial de mensajes
+
+**Deprecado / otro cliente:**  
+- `POST /api/chat` - Pipeline alternativo (assistant.service, ProductIndex). No es el usado por el frontend B2B; considerar deprecar si solo se usa `/message` y `/message/stream`.
+
+Detalle de cuerpos, respuestas y estado de cada endpoint: **`docs/API_CHAT.md`**.
+
+Otros:
+- `POST /api/chat/action` - Procesar acción (START_ORDER, etc.)
+- `GET /api/chat/state/:userId` - Estado del chat
 
 ### Carrito
 - `GET /api/cart/:userId` - Obtener carrito

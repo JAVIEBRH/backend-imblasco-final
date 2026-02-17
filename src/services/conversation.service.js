@@ -80,6 +80,27 @@ const GENERIC_PHRASES_RAW = [
 ]
 const GENERIC_PHRASES_SET = new Set(GENERIC_PHRASES_RAW.map(normalizeForGenericGate))
 
+/** Frases "qué venden" / "qué tienen": respuesta con categorías (no solo genérico). */
+const QUE_VENDEN_PHRASES_RAW = [
+  'qué venden', 'que venden', 'qué vendes', 'que vendes',
+  'qué productos tienen', 'que productos tienen', 'qué artículos tienen', 'que articulos tienen',
+  'qué tienen', 'que tienen', 'tienen productos', 'tienen algo'
+]
+const QUE_VENDEN_PHRASES_SET = new Set(QUE_VENDEN_PHRASES_RAW.map(normalizeForGenericGate))
+
+/** Mensaje es solo pregunta de precio sin producto/SKU: no usar contexto para evitar asumir producto equivocado. */
+const PRECIO_SIN_PRODUCTO_RAW = [
+  'cuanto cuesta', 'cuánto cuesta', 'cual es el precio', 'cuál es el precio', 'que precio', 'qué precio',
+  'cuanto vale', 'cuánto vale', 'que precio tiene', 'qué precio tiene', 'cual es su precio', 'cuál es su precio'
+]
+const PRECIO_SIN_PRODUCTO_SET = new Set(PRECIO_SIN_PRODUCTO_RAW.map(normalizeForGenericGate))
+
+function isPreguntaSoloPrecio(msg) {
+  if (!msg || typeof msg !== 'string') return false
+  const norm = normalizeForGenericGate(msg)
+  return norm.length <= 30 && PRECIO_SIN_PRODUCTO_SET.has(norm)
+}
+
 /** Lista única de términos genéricos de producto (evita búsquedas vacías/ruido). Usada en userAsksForDifferentProduct, AMBIGUA, PRODUCTOS y fallback. */
 const TERMINOS_GENERICOS_PRODUCTO = ['producto', 'productos', 'articulo', 'articulos', 'artículo', 'artículos', 'item', 'items', 'cosa', 'cosas', 'objeto', 'objetos']
 
@@ -144,11 +165,16 @@ function resolveIsLoggedIn(options = {}) {
 
 /**
  * Detecta si el mensaje pregunta por cotización o cómo comprar (info sensible para no registrados).
+ * No se considera cotización cuando pide precio de un producto concreto (evita romper "precio del L39").
  */
 function isPreguntaCotizacionOComoComprar(msg) {
   if (!msg || typeof msg !== 'string') return false
   const m = msg.toLowerCase().trim()
-  return /\b(cotizaci[oó]n|cotizar|cotizo|precio|precios|comprar|compro|pedido|como\s+comprar|como\s+cotizo|c[oó]mo\s+comprar|c[oó]mo\s+cotizo|realizar\s+pedido|hacer\s+pedido|quiero\s+una\s+cotizaci[oó]n)\b/.test(m)
+  if (!/\b(cotizaci[oó]n|cotizar|cotizo|presupuesto|precio|precios|comprar|compro|pedido|como\s+comprar|como\s+cotizo|c[oó]mo\s+comprar|c[oó]mo\s+cotizo|realizar\s+pedido|hacer\s+pedido|quiero\s+una\s+cotizaci[oó]n|necesito\s+presupuesto|necesito\s+cotizaci[oó]n)\b/.test(m)) return false
+  // No tratar como cotización si pide precio de un producto específico (SKU o "precio del X")
+  if (/\bprecio\s+(del|de\s+la?)\s*[a-z0-9]+/i.test(m)) return false
+  if (/\b(sku|id)[:\s]+|\b[a-z]\d+[a-z]?[-.]?\d*\b/i.test(m)) return false // L39, K62, SKU: X, ID: 123
+  return true
 }
 
 /**
@@ -414,6 +440,42 @@ function isDevolucionRequest(msg) {
     /hacer\s+una\s+devoluci[oó]n/i
   ]
   return patterns.some(p => p.test(t))
+}
+
+/**
+ * Pide datos de contacto de la empresa (teléfono, email), NO búsqueda de productos.
+ * Solo true cuando el mensaje es claramente "datos de contacto de Imblasco".
+ * Evita que "tienen teléfonos inalámbricos?" se trate como contacto.
+ */
+function isPreguntaContactoEmpresa(msg) {
+  if (!msg || typeof msg !== 'string') return false
+  const t = msg.trim().toLowerCase().replace(/\s+/g, ' ')
+  const contactPatterns = [
+    /(qué|que|cuales|cuál)\s+(telefonos?|teléfonos?|numeros?|números?)\s+(tienen|tienes|tienen\s+usted)/,
+    /(numero|número)\s+(de\s+)?(telefono|teléfono|contacto)/,
+    /telefono(s)?\s+(de\s+)?(la\s+)?(empresa|casa|oficina|contacto)/,
+    /(a\s+)?qué\s+(mail|email|correo)\s+(escribo|envio|envío)/,
+    /(cual|cuál)\s+es\s+el\s+(telefono|teléfono|mail|email|correo)/,
+    /(como|cómo)\s+(los\s+)?contacto/,
+    /datos\s+de\s+contacto/,
+    /(donde|dónde)\s+(los\s+)?contacto/
+  ]
+  return contactPatterns.some(p => p.test(t))
+}
+
+/**
+ * Mensaje puramente conversacional: cierre o aclaración (gracias, ok, no entendí).
+ * Solo coincidencia exacta o casi exacta para no cortar "no entendí el tema del envío".
+ */
+function isConversacionalCierre(msg) {
+  if (!msg || typeof msg !== 'string') return false
+  const norm = normalizeForGenericGate(msg)
+  if (norm.length > 25) return false
+  const exactos = new Set([
+    'gracias', 'gracias por tu ayuda', 'ok', 'okay', 'vale', 'listo', 'de acuerdo', 'entendido',
+    'no entendi', 'no entendí', 'puedes repetir', 'repite', 'no capte', 'no capté'
+  ])
+  return exactos.has(norm)
 }
 
 /** Detección temprana: pide recomendación de productos (activar modo recomendación). */
@@ -1650,18 +1712,45 @@ export async function processMessageWithAI(userId, message, options = {}) {
         cart
       )
     }
-    
+
+    // Pre-clasificación: pide datos de contacto de la empresa (teléfono/email) → no búsqueda de productos
+    if (!providedExplicitSku && !providedExplicitId && isPreguntaContactoEmpresa(message)) {
+      const info = companyInfoService.getCompanyInfo()
+      const contacto = info.contacto
+      const contactoMsg = `Puedes escribir a ${contacto.email} o llamar al ${contacto.telefono}. Si necesitas más información, no dudes en preguntar. 😊`
+      console.log(`[WooCommerce] ⚠️ Pre-clasificación: contacto empresa → respuesta directa`)
+      return createResponse(contactoMsg, session.state, null, cart)
+    }
+
+    // Pre-clasificación: mensaje conversacional (gracias, ok, no entendí) → cierre amable, no búsqueda
+    if (!providedExplicitSku && !providedExplicitId && isConversacionalCierre(message)) {
+      const norm = normalizeForGenericGate(message)
+      let resp
+      if (/^gracias/.test(norm) || norm === 'gracias por tu ayuda') {
+        resp = '¡De nada! Si necesitas algo más, aquí estoy. 😊'
+      } else if (['ok', 'okay', 'vale', 'listo', 'de acuerdo', 'entendido'].includes(norm)) {
+        resp = 'Ok, ¿en qué más te ayudo?'
+      } else {
+        resp = 'Claro, dime de nuevo o pregúntame por un producto (nombre o SKU) y te ayudo. 😊'
+      }
+      console.log(`[WooCommerce] ⚠️ Pre-clasificación: conversacional → respuesta de cierre`)
+      return createResponse(resp, session.state, null, cart)
+    }
+
     // Puerta dura de genéricos: sin SKU/ID explícito, si el mensaje es puramente genérico → respuesta de ayuda, sin OpenAI ni WooCommerce
     if (!providedExplicitSku && !providedExplicitId) {
       const normGeneric = normalizeForGenericGate(message)
       if (normGeneric.length > 0 && GENERIC_PHRASES_SET.has(normGeneric)) {
         console.log(`[WooCommerce] ⚠️ Mensaje genérico (puerta dura) → respuesta de ayuda sin OpenAI/WP`)
-        return createResponse(
-          '¡Hola! ¿En qué puedo ayudarte? Puedes preguntarme por un producto (nombre o SKU), stock, precios, o información de la empresa.',
-          session.state,
-          null,
-          cart
-        )
+        let genericMessage
+        if (QUE_VENDEN_PHRASES_SET.has(normGeneric)) {
+          const rubros = companyInfoService.getCompanyInfo().rubros || []
+          const lista = rubros.length ? rubros.map(r => `- ${r}`).join('\n') : '- Pesca y caza deportiva\n- Trofeos y premiación\n- Artículos publicitarios\n- Grabado personalizado'
+          genericMessage = `¡Hola! 👋 En Imblasco contamos con varias categorías de productos:\n\n${lista}\n\nSi necesitas más detalles sobre algún producto específico, no dudes en preguntar. 😊`
+        } else {
+          genericMessage = '¡Hola! ¿En qué puedo ayudarte? Puedes preguntarme por un producto (nombre o SKU), stock, precios, o información de la empresa.'
+        }
+        return createResponse(genericMessage, session.state, null, cart)
       }
     }
     
@@ -1740,6 +1829,13 @@ export async function processMessageWithAI(userId, message, options = {}) {
         }
         
         console.log(`[WooCommerce] 🤖 OpenAI decidió: tipo=${queryType}, término=${analisisOpenAI.terminoProducto || 'N/A'}, SKU=${analisisOpenAI.sku || 'N/A'}, ID=${analisisOpenAI.id || 'N/A'}, necesitaMásInfo=${analisisOpenAI.necesitaMasInfo}`)
+
+        // Post-clasificación: si la IA marcó PRODUCTO pero el mensaje pide datos de contacto de la empresa → INFORMACION_GENERAL
+        if (queryType === 'PRODUCTOS' && isPreguntaContactoEmpresa(message)) {
+          queryType = 'INFORMACION_GENERAL'
+          if (analisisOpenAI) analisisOpenAI.tipo = 'INFORMACION_GENERAL'
+          console.log(`[WooCommerce] 🔄 Post-clasificación: mensaje pide contacto empresa → INFORMACION_GENERAL`)
+        }
         
         // No usar SKU/ID del contexto si el mensaje actual NO los menciona (evita "bamboo" → responder con Llavero anterior)
         const msgNorm = (typeof message === 'string' ? message : '').trim().toLowerCase()
@@ -1756,6 +1852,21 @@ export async function processMessageWithAI(userId, message, options = {}) {
             analisisOpenAI.id = null
             console.log(`[WooCommerce] ⚠️ ID "${idStr}" no está en el mensaje; ignorando`)
           }
+        }
+
+        // Fase 5: mensaje solo "cuánto cuesta" / "cuál es el precio" sin producto en el texto → no usar contexto a menos que ya haya producto elegido
+        // Si hay producto en contexto (ej. usuario acaba de elegir "el 2"), sí usar contexto; si no hay contexto, pedir producto/SKU para no asumir uno equivocado
+        const tieneProductoEnContexto = !!(session.currentProduct || context.currentProduct)
+        if (queryType === 'PRODUCTOS' && isPreguntaSoloPrecio(message) && !providedExplicitSku && !providedExplicitId && !tieneProductoEnContexto) {
+          queryType = 'AMBIGUA'
+          if (analisisOpenAI) {
+            analisisOpenAI.tipo = 'AMBIGUA'
+            analisisOpenAI.terminoProducto = null
+            analisisOpenAI.sku = null
+            analisisOpenAI.id = null
+            analisisOpenAI.necesitaMasInfo = true
+          }
+          console.log(`[WooCommerce] 🔄 Pregunta solo precio sin producto en mensaje ni en contexto → AMBIGUA (pedir nombre/SKU)`)
         }
         
         // Si OpenAI detectó SKU/ID que el regex no detectó, usarlo (ya validado contra el mensaje)
@@ -1894,7 +2005,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
     if (queryType === 'FALLBACK') {
       const contacto = companyInfoService.getCompanyInfo().contacto
       const lineaContacto = `Puedes escribir a ${contacto.email} o llamar al ${contacto.telefono}.`
-      let fallbackMessage = `Para esa consulta: ${lineaContacto}`
+      let fallbackMessage = `Para esa consulta te recomiendo contactar a un ejecutivo: ${lineaContacto}`
       if (analisisOpenAI?.tipoFallback) {
         console.log(`[WooCommerce] ⚠️ Consulta de fallback detectada: ${analisisOpenAI.tipoFallback}`)
         switch (analisisOpenAI.tipoFallback) {
@@ -1907,11 +2018,14 @@ export async function processMessageWithAI(userId, message, options = {}) {
           case 'DESCUENTO':
             fallbackMessage = `Los precios son los publicados.\nPara condiciones comerciales: ${lineaContacto}`
             break
+          case 'PEDIDO_ESTADO':
+            fallbackMessage = `No tenemos acceso al estado de tu pedido desde aquí. Para consultar envíos o seguimiento: ${lineaContacto}`
+            break
           default:
-            fallbackMessage = `Para esa consulta: ${lineaContacto}`
+            fallbackMessage = `Para esa consulta te recomiendo contactar a un ejecutivo: ${lineaContacto}`
         }
       } else {
-        console.log('[WooCommerce] Consulta de fallback sin tipoFallback, usando mensaje genérico con contacto')
+        console.log('[WooCommerce] Consulta de fallback sin tipoFallback, usando mensaje neutro con contacto')
       }
       return createResponse(
         fallbackMessage,
@@ -2708,13 +2822,17 @@ export async function processMessageWithAI(userId, message, options = {}) {
                       termToUse = words[0]
                       console.log(`[WooCommerce] RECOMENDACION: usando primera palabra: "${termToUse}"`)
                     }
-                    // Mapear a términos que devuelvan productos esperados: empresarial/corporativo → regalo; oficina sola → regalo oficina; "producto"/"algo" genérico → regalo
+                    // Mapear a términos que devuelvan productos esperados: empresarial/corporativo → regalo; oficina sola → regalo oficina; "producto"/"algo"/"recomiendame"/"productos" genérico → regalo
                     const recomendacionTermMap = {
                       empresarial: 'regalo',
                       corporativo: 'regalo',
                       oficina: 'regalo oficina',
                       producto: 'regalo',
-                      algo: 'regalo'
+                      productos: 'regalo',
+                      algo: 'regalo',
+                      recomiendame: 'regalo',
+                      recomiéndame: 'regalo',
+                      candados: 'candado'
                     }
                     const termNorm = (termToUse || '').trim().toLowerCase()
                     if (recomendacionTermMap[termNorm]) {

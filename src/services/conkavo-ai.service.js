@@ -321,7 +321,7 @@ Analiza el mensaje y responde SOLO con un JSON válido en este formato exacto:
   "id": "ID detectado o null",
   "atributo": "atributo solicitado (ej: 'color', 'tamaño') o null",
   "valorAtributo": "valor del atributo (ej: 'blanco', 'grande') o null",
-  "tipoFallback": "FUTURO" | "RESERVA" | "DESCUENTO" | null,
+  "tipoFallback": "FUTURO" | "RESERVA" | "DESCUENTO" | "PEDIDO_ESTADO" | null,
   "necesitaMasInfo": true | false,
   "razon": "breve explicación de la decisión"
 }
@@ -347,6 +347,7 @@ REGLAS ESTRICTAS (CRÍTICO - EVITAR FALSOS POSITIVOS):
    - "¿Cuándo llega stock?" → FALLBACK (tipoFallback: "FUTURO")
    - "¿Me guardan uno?" → FALLBACK (tipoFallback: "RESERVA")
    - "¿Me hacen precio por volumen?" → FALLBACK (tipoFallback: "DESCUENTO")
+   - Estado del pedido / seguimiento: "¿Cuándo llega mi pedido?", "estado de mi pedido", "dónde está mi pedido", "seguimiento del pedido" → FALLBACK (tipoFallback: "PEDIDO_ESTADO")
 
 5. RECOMENDACION: Si pide sugerencias/recomendaciones de productos (buscar por contexto)
    - "qué me recomiendan?" → RECOMENDACION (terminoProducto: null)
@@ -368,7 +369,9 @@ REGLAS ESTRICTAS (CRÍTICO - EVITAR FALSOS POSITIVOS):
 6. INFORMACION_GENERAL: Solo si pregunta explícitamente información de la EMPRESA (no productos)
    - Ubicación/dirección: "¿dónde están?", "¿dirección?", "¿ubicación?"
    - Horarios: "¿horarios?", "¿a qué hora atienden?", "¿a qué hora abren?", "a que hora abren?", "¿atienden en almuerzo?"
-   - Contacto: "¿teléfono?", "¿email?", "¿cómo los contacto?"
+   - Contacto (datos de la empresa): "¿teléfono?", "¿email?", "¿cómo los contacto?", "Qué telefonos tienen?", "qué teléfonos tienen", "número de contacto", "a qué mail escribo" → SIEMPRE INFORMACION_GENERAL (NUNCA PRODUCTO; no busques productos llamados "teléfono").
+   - Servicios de la empresa (no búsqueda de producto): "¿Hacen grabado?", "¿tienen taller de grabado?", "¿trabajan acero inoxidable?" (pregunta si ofrecen el servicio) → INFORMACION_GENERAL. EXCEPCIÓN: "¿Tienen grabados?" o "productos grabados" (busca productos) → PRODUCTO.
+   - Presupuesto / cotización: "necesito presupuesto", "quiero presupuesto", "necesito cotización" → INFORMACION_GENERAL (cotización), NUNCA FALLBACK.
    - Despachos/envíos: "¿hacen envíos?", "¿despachan a regiones?"
    - Empresa: "¿quiénes son?", "¿qué talleres recomiendan?"
    - Datos bancarios / transferencia: "¿a qué cuenta transfiero?", "datos para transferencia", "¿dónde deposito?", "cuenta para transferir", "datos bancarios", "RUT para transferencia"
@@ -417,6 +420,10 @@ Ejemplos:
 - "¿Cuándo llega stock?" → {"tipo":"FALLBACK","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":"FUTURO","necesitaMasInfo":false,"razon":"Consulta sobre futuro, no disponible"}
 - "¿Me guardan uno?" → {"tipo":"FALLBACK","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":"RESERVA","necesitaMasInfo":false,"razon":"Consulta sobre reserva, no disponible"}
 - "¿Me hacen precio por volumen?" → {"tipo":"FALLBACK","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":"DESCUENTO","necesitaMasInfo":false,"razon":"Consulta sobre descuento, no disponible"}
+- "¿Cuándo llega mi pedido?" → {"tipo":"FALLBACK","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":"PEDIDO_ESTADO","necesitaMasInfo":false,"razon":"Consulta estado/seguimiento de pedido, no disponible en chat"}
+- "Qué telefonos tienen?" → {"tipo":"INFORMACION_GENERAL","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Pide datos de contacto de la empresa, no productos"}
+- "¿Hacen grabado?" → {"tipo":"INFORMACION_GENERAL","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Pregunta por servicio de la empresa"}
+- "necesito presupuesto" → {"tipo":"INFORMACION_GENERAL","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Pide cotización/presupuesto"}
 - "qué me recomiendan?" → {"tipo":"RECOMENDACION","terminoProducto":null,"sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Solicitud de recomendaciones"}
 - "recomiéndame algo para regalo" → {"tipo":"RECOMENDACION","terminoProducto":"regalo","sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Solicitud de recomendaciones con contexto"}
 - "recomiéndame regalos de oficina" → {"tipo":"RECOMENDACION","terminoProducto":"regalos oficina","sku":null,"id":null,"atributo":null,"valorAtributo":null,"tipoFallback":null,"necesitaMasInfo":false,"razon":"Recomendaciones para regalos de oficina"}
@@ -494,7 +501,7 @@ Respuesta (SOLO el JSON, sin explicaciones adicionales):`
       }
       
       // 2. Validar tipos de fallback
-      if (analisis.tipo === 'FALLBACK' && !['FUTURO', 'RESERVA', 'DESCUENTO'].includes(analisis.tipoFallback)) {
+      if (analisis.tipo === 'FALLBACK' && !['FUTURO', 'RESERVA', 'DESCUENTO', 'PEDIDO_ESTADO'].includes(analisis.tipoFallback)) {
         console.error(`[IA] ⚠️ TipoFallback inválido: "${analisis.tipoFallback}" → Forzando AMBIGUA`)
         analisis.tipo = 'AMBIGUA'
         analisis.tipoFallback = null

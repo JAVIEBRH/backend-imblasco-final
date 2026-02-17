@@ -18,7 +18,8 @@
     "serve-scraped": "node src/scripts/serve-scraped.js",
     "test-stock-list": "node src/services/__tests__/conversation-stock-list.test.js",
     "test:regression": "node src/services/__tests__/regression-critical.test.js",
-    "test:regression": "node src/services/__tests__/regression-critical.test.js"
+    "test:regression": "node src/services/__tests__/regression-critical.test.js",
+    "revision-chat": "node src/scripts/revision-chat-cuestionario.js"
   },
   "dependencies": {
     "axios": "^1.13.2",
