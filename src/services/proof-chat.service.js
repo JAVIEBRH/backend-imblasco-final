@@ -2,6 +2,14 @@
  * PROOF CHAT - Servicio Responses API (rama PROOF)
  * Orquesta: system prompt, Vector Store (file_search), consultar_productos, contar_productos.
  * No modifica conversation.service ni assistant.service.
+ *
+ * LIMITACIÓN DE SESIONES (Bug 1):
+ * - El historial de conversación se guarda solo en memoria (Map proofSessions).
+ * - Al reiniciar el servidor se pierde todo el historial.
+ * - Aceptable para desarrollo/pruebas; en producción conviene persistir (ej. MongoDB/Redis)
+ *   o documentar esta limitación al cliente.
+ * - El truncado a HISTORY_MAX se hace solo al añadir nuevos mensajes al historial,
+ *   no en cada lectura, para no perder contexto en sesiones muy usadas.
  */
 
 import fs from 'fs';
@@ -83,11 +91,7 @@ function getOrCreateSession(sessionId) {
   if (!proofSessions.has(sessionId)) {
     proofSessions.set(sessionId, { history: [] });
   }
-  const session = proofSessions.get(sessionId);
-  if (session.history.length > HISTORY_MAX) {
-    session.history = session.history.slice(-HISTORY_MAX);
-  }
-  return session;
+  return proofSessions.get(sessionId);
 }
 
 function extractTextFromOutput(output) {
@@ -159,7 +163,9 @@ export async function processMessage(sessionId, message) {
       break;
     }
 
-    const newItems = [...output];
+    // Solo añadir al input las llamadas y sus resultados (Bug 2: no re-añadir todo output
+    // para evitar crecimiento exponencial y mensajes duplicados en cada iteración).
+    const outputsToAppend = [];
     for (const fc of functionCalls) {
       let args = {};
       try {
@@ -168,18 +174,23 @@ export async function processMessage(sessionId, message) {
         // ignore
       }
       const result = await runTool(fc.name, args);
-      newItems.push({
+      // Responses API: FunctionCallOutput tiene call_id y output (string o array de content).
+      outputsToAppend.push({
         type: 'function_call_output',
         call_id: fc.call_id,
         id: `out_${fc.call_id}`,
         output: typeof result === 'string' ? result : JSON.stringify(result)
       });
     }
-    input = [...input, ...newItems];
+    input = [...input, ...functionCalls, ...outputsToAppend];
   }
 
+  // Truncar historial solo al añadir (no en cada getOrCreateSession) para no perder contexto.
   session.history.push({ role: 'user', content: message });
   session.history.push({ role: 'assistant', content: lastText || 'No pude generar una respuesta.' });
+  if (session.history.length > HISTORY_MAX) {
+    session.history = session.history.slice(-HISTORY_MAX);
+  }
 
   return {
     response: lastText || 'No pude generar una respuesta.',

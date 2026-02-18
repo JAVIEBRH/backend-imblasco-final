@@ -3217,6 +3217,11 @@ export async function processMessageWithAI(userId, message, options = {}) {
             rawResults = filtered
             context.productSearchResults = filtered
             productSearchResults = filtered
+            // Bug 4: si la búsqueda encontró productos pero ninguno cumple las medidas, marcar para mensaje específico
+            if (filtered.length === 0) {
+              context.noProductsMatchDimensions = true
+              context.requestedDimensionsStr = userDims.map(n => n.toFixed(1)).join(' × ') + ' cm'
+            }
           }
         }
       }
@@ -4459,8 +4464,24 @@ Tu mensaje debe ser solo una BREVE introducción (máximo 2-3 líneas):
 - Estilo profesional y cercano, tipo WhatsApp. NO listes nombres, SKUs, precios ni stock en el texto (eso va en las tarjetas).`
             }
         } else {
-          // No se encontró nada, pedir más información
-          textoParaIA = `Redacta una respuesta clara y profesional en español chileno informando al cliente.
+          // No se encontró nada, o se encontraron productos pero ninguno con las medidas indicadas (Bug 4)
+          const noMatchDimensions = context.noProductsMatchDimensions && context.requestedDimensionsStr
+          if (noMatchDimensions) {
+            textoParaIA = `Redacta una respuesta clara y profesional en español chileno informando al cliente.
+
+El cliente preguntó: "${message}"
+
+SITUACIÓN:
+Sí encontramos productos relacionados con la búsqueda, pero NINGUNO tiene las medidas que el cliente indicó (${context.requestedDimensionsStr}). Por eso no le mostramos resultados con esas dimensiones.
+
+INSTRUCCIONES OBLIGATORIAS:
+- Responde de forma breve (máximo 3-4 líneas), profesional y cercana, estilo WhatsApp
+- Explícale que hay productos con ese nombre o tipo, pero ninguno coincide con las medidas solicitadas (${context.requestedDimensionsStr})
+- Ofrécele ayuda: puede pedir otros tamaños o que le mostremos los que hay en otras medidas
+- NO digas que "no hay productos" a secas; deja claro que el problema son las medidas
+- Sé empático y útil`
+          } else {
+            textoParaIA = `Redacta una respuesta clara y profesional en español chileno informando al cliente.
 
 El cliente preguntó: "${message}"
 
@@ -4474,6 +4495,7 @@ INSTRUCCIONES OBLIGATORIAS:
 - Ofrece ayuda para buscar el producto correcto
 - NO digas "estoy verificando" - ya se buscó exhaustivamente
 - Sé empático y útil`
+          }
         }
       } // Cierra el if (hasExplicitReference) / else sin referencia explícita
     } // Cierra el bloque cuando no se encontró información del producto
