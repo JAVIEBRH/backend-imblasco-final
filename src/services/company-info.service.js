@@ -233,11 +233,45 @@ export function getCotizacionMensajeCliente() {
   ].join('\n');
 }
 
+/**
+ * Mensaje fijo de personalización/grabado para el cliente.
+ * Usar siempre que pregunten por personalización, grabado o cómo personalizar (cualquier flujo: recomendaciones, producto, etc.).
+ * @returns {string}
+ */
+export function getPersonalizacionMensajeCliente() {
+  const email = COMPANY_INFO.contacto.email;
+  return `En Imblasco ofrecemos varias opciones de personalización a través de nuestro taller propio. A continuación, te detallo los tipos de personalizaciones que tenemos disponibles:
+
+1. Tipos de grabado:
+   - Fibra óptica: para medallas, placas y copas.
+   - Fibra UV: aplicable a cristal, acrílico y madera.
+   - Fibra CO2: sirve para madera, cuero y acrílico.
+   - Láser CO2: ideal para madera, cuero, acrílico, cristal y metal.
+
+2. Otros tipos de personalización:
+   - Sublimación
+   - Impresión corporativa en productos según la categoría.
+
+Para la personalización, necesitaremos especificar el producto a personalizar, la cantidad y el texto o diseño requerido. Los precios varían según el tipo de grabado y se pueden confirmar directamente con el equipo de ventas.
+
+Para solicitar una personalización o grabado, debes seguir estos pasos:
+
+1. Elige el producto que deseas personalizar.
+2. Define el tipo de personalización que deseas (grabado, sublimación, etc.).
+3. Especifica el texto o diseño que quieres que se grabe.
+4. Indica la cantidad deseada.
+
+Una vez que tengas estos detalles listos, envía un correo a ${email} con la información necesaria. Así podremos gestionar tu solicitud de manera más efectiva.
+
+Si necesitas ayuda para elegir un producto o más detalles sobre la personalización, no dudes en preguntarnos. 😊`;
+}
+
 export default {
   COMPANY_INFO,
   getCompanyInfo,
   getDatosBancariosMensajeCliente,
   getGarantiaDevolucionMensajeCliente,
   getCotizacionMensajeCliente,
+  getPersonalizacionMensajeCliente,
   formatCompanyInfoForAgent,
 };

@@ -1,0 +1,425 @@
+{
+  "userId": "revision-cuestionario-1771339563535",
+  "results": [
+    {
+      "id": 28,
+      "categoria": "General empresa",
+      "pregunta": "Qué telefonos tienen?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Encontré 2 productos relacionados con \"teléfonos\". 📱 Dime cuál te interesa (por número, SKU o nombre) y te doy más detalles.",
+      "hasProduct": false,
+      "hasProductList": true
+    },
+    {
+      "id": 29,
+      "categoria": "General empresa",
+      "pregunta": "cuales son las categorías de productos que venden?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "¡Hola! 👋 En Imblasco contamos con varias categorías de productos:\n\n- Pesca y caza deportiva\n- Trofeos y premiación\n- Artículos publicitarios\n- Grabado personalizado\n\nSi necesitas más detalles sobre algún producto específico dentro de estas categorías, no dudes en preguntar. 😊",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": 30,
+      "categoria": "Existencia",
+      "pregunta": "tienen trofeo por el bicentenario de colo colo",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Encontré 8 productos relacionados con trofeos, incluyendo algunos que podrían ser de interés para el bicentenario de Colo Colo. Dime cuál te interesa (por número, SKU o nombre) y te doy más detalles. 😊",
+      "hasProduct": false,
+      "hasProductList": true
+    },
+    {
+      "id": 31,
+      "categoria": "General empresa",
+      "pregunta": "como puedo pedir una copia del catálogo?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Para solicitar una copia del catálogo, puedes enviar un correo a ventas@imblasco.cl con tu solicitud. Asegúrate de incluir los datos de tu empresa para que podamos atenderte de la mejor manera. Si tienes alguna otra pregunta, no dudes en avisarme. 😊",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": 32,
+      "categoria": "Caracteristicas",
+      "pregunta": "Tienes especificaciones de la Calculadora Fashion Rojo T74 ?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Sí, tenemos la Calculadora Fashion Rojo T74 disponible.  \nSKU: 601054394.  \nStock: 133 unidades disponibles.  \nPrecio: $590.  \n\n¿Te gustaría saber algo más? 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": 33,
+      "categoria": "Personalizacion",
+      "pregunta": "Que opciones personalización tienes para el producto T74?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Lamentablemente, la Calculadora Fashion Rojo T74 no tiene opciones de personalización disponibles. Si tienes alguna otra consulta o necesitas información sobre otro producto, házmelo saber. 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": 34,
+      "categoria": "Caracteristicas",
+      "pregunta": "tienes foto de este producto?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Sí, tenemos la Calculadora Fashion Rojo T74 disponible.  \nSKU: 601054394.  \nStock: 133 unidades disponibles.  \nPrecio: $590.  \n\n¿Te gustaría saber algo más? 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": 35,
+      "categoria": "Características",
+      "pregunta": "cuantas piezas trae el producto SU01?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Lamentablemente, no tengo información específica sobre cuántas piezas trae el producto SU01. Te recomiendo escribir a ventas@imblasco.cl o llamar al 225443327 / 225443382 / 225440418 para obtener más detalles. 😊",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": 36,
+      "categoria": "Productos",
+      "pregunta": "que productos relacionados al producto SU01 tienen ?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Encontré 5 productos relacionados con el producto SU01. Dime cuál te interesa (por número, SKU o nombre) y te doy más detalles. 😊",
+      "hasProduct": false,
+      "hasProductList": true
+    },
+    {
+      "id": 37,
+      "categoria": "Existencia",
+      "pregunta": "Cuando llega el producto T14?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Lamentablemente, no tenemos el producto Toalla Facial Microfibra T14 disponible.  \n\nSKU: T13.  \nStock: Stock agotado (0 unidades).  \nPrecio: $1.890.  \n\n🎨 Variaciones disponibles:  \n• Color: Gris (SKU: 602382113) - Stock agotado (0 unidades) - $1.890  \n• Color: Negro (SKU: 602382112) - Stock agotado (0 unidades) - $1.890  \n• Color: Blanco (SKU: 602382110) - Stock agotado (0 unidades) - $1.890  \n• Color: Azul (SKU: 602382111) - Stock agotado (0 unidades) - $1.890  \n\n¿Te gustaría saber sobre otro producto? 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": 38,
+      "categoria": "Personalización",
+      "pregunta": "Que opciones de personalizacion tiene el producto GR30",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Lamentablemente, no tenemos el Gorro Jockey Poliéster Esponja Malla Sublimable GR30 disponible.  \nSKU: GR20-1.  \nStock: Stock agotado (0 unidades).  \nPrecio: $990.  \n\n🎨 Variaciones disponibles:  \n• Color: Negro-Rojo-Blanco (SKU: 601062743) - Stock agotado (0 unidades) - $990  \n• Color: Azul-Rojo-Blanco (SKU: 601062744) - Stock agotado (0 unidades) - $990  \n• Color: Naranjo (SKU: 601062742) - Stock agotado (0 unidades) - $990  \n• Color: Beige (SKU: 601062741) - Stock agotado (0 unidades) - $990  \n• Color: Amarillo (SKU: 601062740) - Stock agotado (0 unidades) - $990  \n\nSi necesitas información sobre otro producto o alguna consulta adicional, no dudes en decírmelo. 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": 39,
+      "categoria": "General empresa",
+      "pregunta": "Como comprar?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Para solicitar una cotización:\n\n- Enviar correo a: cesar.barahona.b@gmail.com\n- Asunto del correo: Cotización\n- En el cuerpo: Indicar producto(s) a consultar con su SKU, cantidad y RUT de la empresa.\n\nSi necesitas más información, no dudes en preguntar. 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": 40,
+      "categoria": "General empresa",
+      "pregunta": "Que datos debo enviar para registrarme coo cliente?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Para registrarte como cliente, debes enviar la siguiente información a ventas@imblasco.cl:\n\n- **RUT**\n- **Razón social**\n- **Giro**\n- **Dirección**\n- **Comuna**\n\nUna vez que envíes estos datos, recibirás un correo confirmando tu solicitud. Nuestro equipo revisará la información en un plazo de 24 a 48 horas y te notificará cuando tu cuenta esté aprobada. Así podrás acceder a precios mayoristas y realizar pedidos.\n\nSi necesitas más información, no dudes en preguntar. 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": "2.1",
+      "categoria": "Informacion Básica",
+      "pregunta": "Cual es su Direccion",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Nuestra dirección es:\n\nÁlvarez de Toledo 981, San Miguel, Santiago.  \nEstamos a pasos del Metro San Miguel y contamos con estacionamiento para clientes.  \n\nSi necesitas más información, no dudes en preguntar. 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": "2.2",
+      "categoria": "Informacion Básica",
+      "pregunta": "Qué Horario tienen",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Nuestro horario de atención es el siguiente:\n\n- **Lunes a viernes:** 9:42 a 14:00 y 15:30 a 19:00 hrs\n- **Sábados:** 10:00 a 13:00 hrs\n\nRecuerda que no atendemos durante la hora de almuerzo, entre las 14:00 y 15:30 hrs. Si tienes más preguntas, no dudes en preguntar. 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": "2.3",
+      "categoria": "Informacion Básica",
+      "pregunta": "Cual es el Horario sábado",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Nuestro horario de atención los sábados es de 10:00 a 13:00 hrs. \n\nSi necesitas más información o tienes alguna otra consulta, no dudes en decírmelo. 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": "2.4",
+      "categoria": "Informacion Básica",
+      "pregunta": "Cual es la hora de colacion",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Atendemos de lunes a viernes de 9:42 a 14:00 y de 15:30 a 19:00 hrs. Los sábados de 10:00 a 13:00 hrs. No atendemos durante la hora de almuerzo (entre las 14:00 y 15:30 hrs).",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": "2.5",
+      "categoria": "Informacion Básica",
+      "pregunta": "Ubicación taller de grabado",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Lamentablemente, no tengo información específica sobre la ubicación del taller de grabado. Sin embargo, puedes visitarnos en nuestra dirección principal:\n\nÁlvarez de Toledo 981, San Miguel, Santiago.  \nEstamos a pasos del Metro San Miguel y contamos con estacionamiento para clientes.\n\nSi necesitas más detalles o tienes otra consulta, no dudes en preguntar. 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": "2.6",
+      "categoria": "Solicitudes de cotización",
+      "pregunta": "Necesito una cotización",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Para solicitar una cotización, por favor envía un correo a: cesar.barahona.b@gmail.com. \n\nEn el asunto del correo, escribe \"Cotización\". En el cuerpo, indica los productos que deseas consultar con su SKU, la cantidad y el RUT de tu empresa.\n\nSi necesitas más información, no dudes en preguntar. 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": "2.7",
+      "categoria": "Solicitudes de cotización",
+      "pregunta": "Quiero cotizar",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Para solicitar una cotización, por favor envía un correo a: cesar.barahona.b@gmail.com. \n\nEn el asunto del correo, escribe \"Cotización\" y en el cuerpo indica los producto(s) a consultar con su SKU, cantidad y el RUT de tu empresa.\n\nSi necesitas más información, no dudes en preguntar. 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": "2.8",
+      "categoria": "Solicitudes de cotización",
+      "pregunta": "Me puedes cotizar",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Para solicitar una cotización:\n\n- Enviar correo a: cesar.barahona.b@gmail.com\n- Asunto del correo: Cotización\n- En el cuerpo: Indicar producto(s) a consultar con su SKU, cantidad y RUT de la empresa.\n\nSi necesitas más información, no dudes en preguntar. 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": "2.9",
+      "categoria": "Solicitudes incompletas",
+      "pregunta": "Necesito precio",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Para solicitar una cotización:\n\n- Enviar correo a: cesar.barahona.b@gmail.com\n- Asunto del correo: Cotización\n- En el cuerpo: Indicar producto(s) a consultar con su SKU, cantidad y RUT de la empresa.\n\nSi necesitas más información, no dudes en preguntar. 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": "2.10",
+      "categoria": "Solicitudes incompletas",
+      "pregunta": "Quiero comprar",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Para solicitar una cotización:\n\n- Enviar correo a: cesar.barahona.b@gmail.com\n- Asunto del correo: Cotización\n- En el cuerpo: Indicar producto(s) a consultar con su SKU, cantidad y RUT de la empresa.\n\nSi necesitas más información, no dudes en preguntar. 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": "2.11",
+      "categoria": "Solicitudes incompletas",
+      "pregunta": "Cuánto cuesta",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Lo siento, pero no tenemos el Gorro Jockey Poliéster Esponja Malla Sublimable GR30 disponible.\n\nSKU: GR20-1.  \nStock: Stock agotado (0 unidades).  \nPrecio: $990.\n\n🎨 Variaciones disponibles:  \n• Color: Negro-Rojo-Blanco (SKU: 601062743) - 0 unidades - $990  \n• Color: Azul-Rojo-Blanco (SKU: 601062744) - 0 unidades - $990  \n• Color: Naranjo (SKU: 601062742) - 0 unidades - $990  \n• Color: Beige (SKU: 601062741) - 0 unidades - $990  \n• Color: Amarillo (SKU: 601062740) - 0 unidades - $990  \n\nDime qué color y cantidad necesitas y lo reviso al tiro. 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": "2.12",
+      "categoria": "Solicitudes incompletas",
+      "pregunta": "Necesito presupuesto",
+      "ok": true,
+      "status": 200,
+      "botMessage": "No contamos con información de fechas de reposición.\nPuedes escribir a ventas@imblasco.cl o llamar al 225443327 / 225443382 / 225440418.",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": "2.13",
+      "categoria": "Productos y servicios",
+      "pregunta": "¿Qué venden?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "¡Hola! ¿En qué puedo ayudarte? Puedes preguntarme por un producto (nombre o SKU), stock, precios, o información de la empresa.",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": "2.14",
+      "categoria": "Productos y servicios",
+      "pregunta": "¿Hacen grabado?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "No contamos con información de fechas de reposición.\nPuedes escribir a ventas@imblasco.cl o llamar al 225443327 / 225443382 / 225440418.",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": "2.15",
+      "categoria": "Productos y servicios",
+      "pregunta": "¿Trabajan acero inoxidable?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Encontré 8 productos relacionados con acero inoxidable. Si estás buscando termos, mugs o botellas, tenemos varias opciones disponibles. Dime cuál te interesa (por número, SKU o nombre) y te doy más detalles. 😊",
+      "hasProduct": false,
+      "hasProductList": true
+    },
+    {
+      "id": "2.16",
+      "categoria": "Taller de grabado",
+      "pregunta": "Necesito hablar con grabado",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Entiendo que necesitas hablar con alguien sobre grabado. Puedes escribir al correo ventas@imblasco.cl o llamar a nuestros teléfonos de contacto: 225443327 / 225443382 / 225440418. Estaremos encantados de ayudarte. 😊",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": "2.17",
+      "categoria": "Taller de grabado",
+      "pregunta": "Contacto del taller de grabado",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Para consultar sobre el taller de grabado, puedes escribir al correo ventas@imblasco.cl o llamar a los siguientes teléfonos: 225443327 / 225443382. Estaremos encantados de ayudarte. 😊",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": "2.18",
+      "categoria": "Información bancaria",
+      "pregunta": "Cuales son los Datos de transferencia?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Para realizar la transferencia, puedes utilizar los siguientes datos bancarios:\n\n**RUT:** 76.274.594-1 — Importadora Blas y Cía. Ltda.  \n**Tipo de cuenta:** Cuenta Corriente  \n\n**Cuentas disponibles:**  \n- **SANTANDER:** 06-699 114-8  \n- **ESTADO:** 64 34 282  \n- **ITAÚ:** 20-5518-518  \n- **SCOTIABANK:** 975-730-255  \n\nRecuerda que el pago debe ser previo a la entrega de tu pedido. Si necesitas más información, no dudes en preguntar. 😊",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": "2.19",
+      "categoria": "Información bancaria",
+      "pregunta": "Cual es la cuenta bancaria?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Para realizar la transferencia, puedes utilizar los siguientes datos bancarios:\n\n**RUT:** 76.274.594-1 — Importadora Blas y Cía. Ltda.  \n**Tipo de cuenta:** Cuenta Corriente  \n\n**Cuentas disponibles:**  \n- **SANTANDER:** 06-699 114-8  \n- **ESTADO:** 64 34 282  \n- **ITAÚ:** 20-5518-518  \n- **SCOTIABANK:** 975-730-255  \n\nRecuerda que el pago debe ser previo a la entrega de tu pedido. Si necesitas más información, no dudes en preguntar. 😊",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": "2.20",
+      "categoria": "Preguntas fuera de alcance",
+      "pregunta": "¿Cuánto stock tienen?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Necesito el nombre completo o el SKU del producto para darte precio y stock. ¿Me lo confirmas?",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": "2.21",
+      "categoria": "Preguntas fuera de alcance",
+      "pregunta": "¿Puedes generar la cotización?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Para solicitar una cotización, por favor envía un correo a: cesar.barahona.b@gmail.com.  \n\nEn el asunto del correo, escribe \"Cotización\".  \n\nEn el cuerpo del mensaje, indica el(los) producto(s) a consultar con su SKU, cantidad y el RUT de tu empresa.  \n\nSi necesitas más información, no dudes en preguntar. 😊",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": "2.22",
+      "categoria": "Preguntas fuera de alcance",
+      "pregunta": "¿Cuál es el precio del SKU XL60?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Sí, tenemos el Timbre Automático Rectangular XL60 disponible.  \nSKU: XL60.  \nStock: 2659 unidades disponibles.  \nPrecio: $4.990.\n\n🎨 Variaciones disponibles:  \n• Color: Rojo (SKU: 701020030) - 916 unidades - $4.990  \n• Color: Negro (SKU: 701020028) - 924 unidades - $4.990  \n• Color: Azul (SKU: 701020029) - 819 unidades - $4.990  \n\nDime qué color y cantidad necesitas y lo reviso al tiro. 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": "2.23",
+      "categoria": "Preguntas fuera de alcance",
+      "pregunta": "¿Cuándo llega mi pedido?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Para solicitar una cotización:\n\n- Enviar correo a: cesar.barahona.b@gmail.com  \n- Asunto del correo: Cotización  \n- En el cuerpo: Indicar en el cuerpo del correo: producto(s) a consultar con su SKU, cantidad y RUT de la empresa.  \n\nSi necesitas más información, no dudes en preguntar. 😊",
+      "hasProduct": true,
+      "hasProductList": false
+    },
+    {
+      "id": "2.24",
+      "categoria": "Conversación básica",
+      "pregunta": "Hola",
+      "ok": true,
+      "status": 200,
+      "botMessage": "¡Hola! 👋 ¿En qué puedo ayudarte hoy? Si tienes alguna pregunta sobre nuestros productos o servicios, no dudes en decírmelo.",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": "2.25",
+      "categoria": "Conversación básica",
+      "pregunta": "Gracias",
+      "ok": true,
+      "status": 200,
+      "botMessage": "¡Hola! 😊 No encontré productos que coincidan con \"Gracias\". Si puedes darme el nombre completo o el SKU del producto que buscas, estaré encantado de ayudarte a encontrarlo. ¡Dime cómo puedo asistirte!",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": "2.26",
+      "categoria": "Conversación básica",
+      "pregunta": "ok",
+      "ok": true,
+      "status": 200,
+      "botMessage": "No encontré productos que coincidan con \"ok\". Si puedes darme el nombre completo o el SKU del producto que buscas, estaré encantado de ayudarte a encontrarlo. 😊 ¡Dime cómo puedo asistirte!",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": "2.27",
+      "categoria": "Conversación básica",
+      "pregunta": "No entendí (inmediatamente despues de la pregunta anterior)",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Lamento no haber encontrado productos que coincidan con \"No entendí\". 😔 Podrías darme el nombre completo o el SKU del producto que buscas? Estoy aquí para ayudarte a encontrar lo que necesitas. ¡Dime cómo puedo asistirte!",
+      "hasProduct": false,
+      "hasProductList": false
+    },
+    {
+      "id": "2.28",
+      "categoria": "Varias",
+      "pregunta": "Que regalo me recomiendan para una mujer",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Encontré 5 productos relacionados con \"regalo para una mujer\". 🎁 Dime cuál te interesa (por número, SKU o nombre) y te doy más detalles. 😊",
+      "hasProduct": false,
+      "hasProductList": true
+    },
+    {
+      "id": "2.29",
+      "categoria": "Varias",
+      "pregunta": "Tienen mochilas?",
+      "ok": true,
+      "status": 200,
+      "botMessage": "Encontré 8 productos relacionados con \"mochilas\". 🎒 Si necesitas más opciones, tengo más disponibles. Dime cuál te interesa (por número, SKU o nombre) y te doy más detalles. 😊",
+      "hasProduct": false,
+      "hasProductList": true
+    }
+  ]
+}

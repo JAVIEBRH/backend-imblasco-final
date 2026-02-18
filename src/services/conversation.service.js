@@ -80,27 +80,6 @@ const GENERIC_PHRASES_RAW = [
 ]
 const GENERIC_PHRASES_SET = new Set(GENERIC_PHRASES_RAW.map(normalizeForGenericGate))
 
-/** Frases "qué venden" / "qué tienen": respuesta con categorías (no solo genérico). */
-const QUE_VENDEN_PHRASES_RAW = [
-  'qué venden', 'que venden', 'qué vendes', 'que vendes',
-  'qué productos tienen', 'que productos tienen', 'qué artículos tienen', 'que articulos tienen',
-  'qué tienen', 'que tienen', 'tienen productos', 'tienen algo'
-]
-const QUE_VENDEN_PHRASES_SET = new Set(QUE_VENDEN_PHRASES_RAW.map(normalizeForGenericGate))
-
-/** Mensaje es solo pregunta de precio sin producto/SKU: no usar contexto para evitar asumir producto equivocado. */
-const PRECIO_SIN_PRODUCTO_RAW = [
-  'cuanto cuesta', 'cuánto cuesta', 'cual es el precio', 'cuál es el precio', 'que precio', 'qué precio',
-  'cuanto vale', 'cuánto vale', 'que precio tiene', 'qué precio tiene', 'cual es su precio', 'cuál es su precio'
-]
-const PRECIO_SIN_PRODUCTO_SET = new Set(PRECIO_SIN_PRODUCTO_RAW.map(normalizeForGenericGate))
-
-function isPreguntaSoloPrecio(msg) {
-  if (!msg || typeof msg !== 'string') return false
-  const norm = normalizeForGenericGate(msg)
-  return norm.length <= 30 && PRECIO_SIN_PRODUCTO_SET.has(norm)
-}
-
 /** Lista única de términos genéricos de producto (evita búsquedas vacías/ruido). Usada en userAsksForDifferentProduct, AMBIGUA, PRODUCTOS y fallback. */
 const TERMINOS_GENERICOS_PRODUCTO = ['producto', 'productos', 'articulo', 'articulos', 'artículo', 'artículos', 'item', 'items', 'cosa', 'cosas', 'objeto', 'objetos']
 
@@ -442,42 +421,6 @@ function isDevolucionRequest(msg) {
   return patterns.some(p => p.test(t))
 }
 
-/**
- * Pide datos de contacto de la empresa (teléfono, email), NO búsqueda de productos.
- * Solo true cuando el mensaje es claramente "datos de contacto de Imblasco".
- * Evita que "tienen teléfonos inalámbricos?" se trate como contacto.
- */
-function isPreguntaContactoEmpresa(msg) {
-  if (!msg || typeof msg !== 'string') return false
-  const t = msg.trim().toLowerCase().replace(/\s+/g, ' ')
-  const contactPatterns = [
-    /(qué|que|cuales|cuál)\s+(telefonos?|teléfonos?|numeros?|números?)\s+(tienen|tienes|tienen\s+usted)/,
-    /(numero|número)\s+(de\s+)?(telefono|teléfono|contacto)/,
-    /telefono(s)?\s+(de\s+)?(la\s+)?(empresa|casa|oficina|contacto)/,
-    /(a\s+)?qué\s+(mail|email|correo)\s+(escribo|envio|envío)/,
-    /(cual|cuál)\s+es\s+el\s+(telefono|teléfono|mail|email|correo)/,
-    /(como|cómo)\s+(los\s+)?contacto/,
-    /datos\s+de\s+contacto/,
-    /(donde|dónde)\s+(los\s+)?contacto/
-  ]
-  return contactPatterns.some(p => p.test(t))
-}
-
-/**
- * Mensaje puramente conversacional: cierre o aclaración (gracias, ok, no entendí).
- * Solo coincidencia exacta o casi exacta para no cortar "no entendí el tema del envío".
- */
-function isConversacionalCierre(msg) {
-  if (!msg || typeof msg !== 'string') return false
-  const norm = normalizeForGenericGate(msg)
-  if (norm.length > 25) return false
-  const exactos = new Set([
-    'gracias', 'gracias por tu ayuda', 'ok', 'okay', 'vale', 'listo', 'de acuerdo', 'entendido',
-    'no entendi', 'no entendí', 'puedes repetir', 'repite', 'no capte', 'no capté'
-  ])
-  return exactos.has(norm)
-}
-
 /** Detección temprana: pide recomendación de productos (activar modo recomendación). */
 function isRecomendacionRequest(msg) {
   if (!msg || typeof msg !== 'string') return false
@@ -621,6 +564,138 @@ function shouldSkipFullCatalogSearch(message, extractedTerm, queryType) {
   }
 
   return false
+}
+
+/** Tolerancia en cm para comparar dimensiones (ej. 17x7x2.8 vs 17.1x6.9x2.8). */
+const DIMENSION_TOLERANCE_CM = 0.5
+
+/** Palabras que indican que el usuario pregunta por medidas (no por SKU/código). */
+const MEASURE_KEYWORDS = /medidas?|dimensiones?|dimensión|cms?\.?|mm\b|metros?|tamaño|ancho|alto|largo|cent[ií]metros?|mil[ií]metros?/i
+/** Indica que el mensaje menciona SKU/código de producto cerca del patrón (evitar falsos positivos). */
+const SKU_CONTEXT = /\b(sku|codigo|código|código\s+de\s+producto)\s*[:]?\s*\d|^\s*\d{6,}\s*[xX×]|[\s]\d{6,}\s*[xX×]/i
+
+/**
+ * Extrae 2 o 3 números (medidas en cm) del mensaje.
+ * Acepta "17 x 7 x 2,8", "17x7x2.8", "17 cms x 7" (2 valores). Si hay "mm", convierte a cm.
+ * @param {string} message - Mensaje del usuario
+ * @returns {[number, number] | [number, number, number] | null} - Dos o tres números ordenados en cm, o null
+ */
+function extractDimensionsFromMessage(message) {
+  if (!message || typeof message !== 'string') return null
+  const hasMm = /\bmm\b/i.test(message)
+  const factor = hasMm ? 0.1 : 1
+  const parse = (a, b, c) => {
+    const na = parseFloat(String(a).replace(',', '.'))
+    const nb = parseFloat(String(b).replace(',', '.'))
+    if (!Number.isFinite(na) || !Number.isFinite(nb) || na <= 0 || nb <= 0) return null
+    if (c !== undefined && c !== null) {
+      const nc = parseFloat(String(c).replace(',', '.'))
+      if (!Number.isFinite(nc) || nc <= 0) return null
+      return [na * factor, nb * factor, nc * factor].sort((x, y) => x - y)
+    }
+    return [na * factor, nb * factor].sort((x, y) => x - y)
+  }
+  const three = message.match(/(\d+[,.]?\d*)\s*[xX×]\s*(\d+[,.]?\d*)\s*[xX×]\s*(\d+[,.]?\d*)/)
+  if (three) return parse(three[1], three[2], three[3])
+  const two = message.match(/(\d+[,.]?\d*)\s*[xX×]\s*(\d+[,.]?\d*)/)
+  if (two) return parse(two[1], two[2])
+  return null
+}
+
+/**
+ * Parsea dimensiones de producto WooCommerce (length, width, height) a tripleta ordenada en cm.
+ * Orden en Woo: length, width, height; devolvemos [min, mid, max] para comparar con usuario (cualquier orden).
+ * @param {{ length?: string|null, width?: string|null, height?: string|null } | null} dim
+ * @returns {[number, number, number] | null}
+ */
+function parseProductDimensions(dim) {
+  if (!dim || typeof dim !== 'object') return null
+  const vals = [
+    dim.length != null ? String(dim.length).trim().replace(',', '.') : '',
+    dim.width != null ? String(dim.width).trim().replace(',', '.') : '',
+    dim.height != null ? String(dim.height).trim().replace(',', '.') : ''
+  ].map(s => (s === '' ? NaN : parseFloat(s)))
+  if (vals.some(n => !Number.isFinite(n) || n < 0)) return null
+  return vals.sort((a, b) => a - b)
+}
+
+/**
+ * Compara medidas usuario (2 o 3 valores ordenados) con tripleta producto [p1, p2, p3] ordenada.
+ * Con 3 valores: coincidencia posición a posición. Con 2: dos de las tres dimensiones del producto deben coincidir.
+ * @param {[number, number] | [number, number, number]} userSorted - Medidas del usuario (ordenadas)
+ * @param {[number, number, number]} productSorted - Medidas del producto (ordenadas, length === 3)
+ * @param {number} toleranceCm - Tolerancia en cm
+ * @returns {boolean}
+ */
+function dimensionsMatch(userSorted, productSorted, toleranceCm = DIMENSION_TOLERANCE_CM) {
+  if (!userSorted || !productSorted || productSorted.length !== 3) return false
+  const within = (a, b) => Math.abs(a - b) <= toleranceCm
+  if (userSorted.length === 3) {
+    return userSorted.every((u, i) => within(u, productSorted[i]))
+  }
+  if (userSorted.length === 2) {
+    const [u0, u1] = userSorted
+    return (
+      (within(u0, productSorted[0]) && within(u1, productSorted[1])) ||
+      (within(u0, productSorted[0]) && within(u1, productSorted[2])) ||
+      (within(u0, productSorted[1]) && within(u1, productSorted[2]))
+    )
+  }
+  return false
+}
+
+/**
+ * Indica si el mensaje es una consulta por medidas (solo entonces se aplica el filtro).
+ * Evita falsos positivos: "SKU 17x20" o "código 601055402" no deben activar.
+ * Requiere patrón 2 o 3 números con "x" Y además: palabra clave de medidas, o 3 números, o 2 números que parecen medidas (decimal/rango y no SKU).
+ * @param {string} message
+ * @returns {boolean}
+ */
+function isMeasureQuery(message) {
+  if (!message || typeof message !== 'string') return false
+  const hasPattern3 = /(\d+[,.]?\d*)\s*[xX×]\s*(\d+[,.]?\d*)\s*[xX×]\s*(\d+[,.]?\d*)/.test(message)
+  const hasPattern2 = /(\d+[,.]?\d*)\s*[xX×]\s*(\d+[,.]?\d*)/.test(message)
+  if (!hasPattern2 && !hasPattern3) return false
+  if (MEASURE_KEYWORDS.test(message)) return true
+  if (hasPattern3) return true
+  if (SKU_CONTEXT.test(message)) return false
+  if (!hasPattern2) return false
+  const twoMatch = message.match(/(\d+[,.]?\d*)\s*[xX×]\s*(\d+[,.]?\d*)/)
+  if (!twoMatch) return false
+  const a = parseFloat(twoMatch[1].replace(',', '.'))
+  const b = parseFloat(twoMatch[2].replace(',', '.'))
+  const hasDecimal = /,\d|\.\d/.test(twoMatch[0])
+  const inCmRange = (n) => n >= 0.5 && n <= 300
+  const inMmRange = (n) => n >= 1 && n <= 3000
+  const looksLikeMeasures = hasDecimal || (inCmRange(a) && inCmRange(b)) || (inMmRange(a) && inMmRange(b))
+  return looksLikeMeasures
+}
+
+/**
+ * Indica si el mensaje pregunta por personalización o grabado.
+ * Respuesta siempre con mensaje fijo (getPersonalizacionMensajeCliente), independiente del flujo (recomendaciones, producto, etc.).
+ * @param {string} message
+ * @returns {boolean}
+ */
+function isPreguntaPersonalizacion(message) {
+  if (!message || typeof message !== 'string') return false
+  const t = message.trim().toLowerCase().replace(/\s+/g, ' ')
+  const patterns = [
+    /\bpersonaliz(ar|aci[oó]n|ado)\b/i,
+    /\bgrabado\b/i,
+    /\bsublimaci[oó]n\b/i,
+    /\bse\s+puede\s+personalizar\b/i,
+    /\b(se\s+)?personaliza\b/i,
+    /\bhacen\s+grabado\b/i,
+    /\btipos\s+de\s+(grabado|personalizaci[oó]n)\b/i,
+    /\bimpresi[oó]n\s+corporativa\b/i,
+    /\b(este|el)\s+(producto\s+)?se\s+puede\s+personalizar\b/i,
+    /\bpersonalizar\s+(el|este|esta)\b/i,
+    /\bquiero\s+personalizar\b/i,
+    /\bsolicitar\s+(personalizaci[oó]n|grabado)\b/i,
+    /\b(texto|diseño)\s+(a\s+)?grabar\b/i
+  ]
+  return patterns.some(p => p.test(t))
 }
 
 /**
@@ -791,19 +866,23 @@ function formatStockfBlockForPrompt(productOrEnrichment) {
 function userAsksForDifferentProduct(message, contextProduct, analisisOpenAI, providedExplicitSku, providedExplicitId) {
   if (!contextProduct) return false
 
-  // Preguntas genéricas sobre atributos (unidades, embalaje, personalización) sin SKU/ID distinto → mantener contexto
+  // Preguntas genéricas sobre atributos (unidades, embalaje, color, tamaño) sin SKU/ID distinto → mantener contexto
   if (!providedExplicitSku && !providedExplicitId && !analisisOpenAI?.sku && !analisisOpenAI?.id) {
     const msgLower = (message || '').toLowerCase()
     const isAttributeQuestion = /cuantas?\s+(unidades?|cajas?|piezas?)\s+(trae|contiene|viene)/i.test(msgLower) ||
       /que\s+(personalizacion|caracteristicas|especificaciones)\s+tiene/i.test(msgLower) ||
-      (/(embalaje|master|pack)/i.test(msgLower) && /unidades?|trae|contiene/i.test(msgLower))
+      (/(embalaje|master|pack)/i.test(msgLower) && /unidades?|trae|contiene/i.test(msgLower)) ||
+      /(en\s+)?que\s+colores?|(cual|cuál)\s+es\s+(el\s+)?(tamano|tamaño)|colores?\s+(tiene|disponibles?)|(tamano|tamaño)\s+(tiene|disponibles?)/i.test(msgLower)
     if (isAttributeQuestion) {
       const term = (analisisOpenAI?.terminoProducto || extractProductTerm(message)).trim().toLowerCase()
       if (!term || TERMINOS_GENERICOS_PRODUCTO.includes(term)) return false
-      const attrOnlyWords = ['embalaje', 'master', 'pack', 'packaging', 'unidades', 'cajas', 'el', 'la']
+      const attrOnlyWords = ['embalaje', 'master', 'pack', 'packaging', 'unidades', 'cajas', 'el', 'la', 'este', 'esta', 'esto', 'color', 'colors', 'tamano', 'tamaño', 'colores', 'cual', 'cuál', 'es']
       const termWords = term.split(/\s+/).filter(Boolean)
       if (termWords.length > 0 && termWords.every(w => attrOnlyWords.includes(w))) return false
     }
+    // "color este", "cual es tamano este", "en que colores" sin otro producto → mismo producto en contexto
+    const onlyDemonstrativeOrAttribute = /^(este|esta|esto|color|colors|tamano|tamaño|colores)(\s+(este|esta|esto|producto))?$/i.test((extractProductTerm(message) || '').trim())
+    if (onlyDemonstrativeOrAttribute) return false
   }
 
   const contextSku = normalizeCode(contextProduct.sku || '')
@@ -1647,6 +1726,14 @@ export async function processMessageWithAI(userId, message, options = {}) {
       addToHistory(session, 'bot', lunchResponse)
       return createResponse(lunchResponse, session.state, null, cart)
     }
+
+    // Pre-clasificación: personalización/grabado → respuesta fija siempre (recomendaciones, producto, o cualquier flujo)
+    if (isPreguntaPersonalizacion(message)) {
+      const personalizacionMsg = companyInfoService.getPersonalizacionMensajeCliente()
+      addToHistory(session, 'bot', personalizacionMsg)
+      console.log('[WooCommerce] ⚠️ Pre-clasificación: personalización/grabado → respuesta fija')
+      return createResponse(personalizacionMsg, session.state, null, cart)
+    }
     
     // Validación de acceso: precios, stock y cotización solo para usuarios con cuenta aprobada.
     // Pruebas: CHAT_AUTH_AS_LOGGED_IN !== 'false' → todos como logueados. A futuro: options.isLoggedIn desde validación de token.
@@ -1712,45 +1799,18 @@ export async function processMessageWithAI(userId, message, options = {}) {
         cart
       )
     }
-
-    // Pre-clasificación: pide datos de contacto de la empresa (teléfono/email) → no búsqueda de productos
-    if (!providedExplicitSku && !providedExplicitId && isPreguntaContactoEmpresa(message)) {
-      const info = companyInfoService.getCompanyInfo()
-      const contacto = info.contacto
-      const contactoMsg = `Puedes escribir a ${contacto.email} o llamar al ${contacto.telefono}. Si necesitas más información, no dudes en preguntar. 😊`
-      console.log(`[WooCommerce] ⚠️ Pre-clasificación: contacto empresa → respuesta directa`)
-      return createResponse(contactoMsg, session.state, null, cart)
-    }
-
-    // Pre-clasificación: mensaje conversacional (gracias, ok, no entendí) → cierre amable, no búsqueda
-    if (!providedExplicitSku && !providedExplicitId && isConversacionalCierre(message)) {
-      const norm = normalizeForGenericGate(message)
-      let resp
-      if (/^gracias/.test(norm) || norm === 'gracias por tu ayuda') {
-        resp = '¡De nada! Si necesitas algo más, aquí estoy. 😊'
-      } else if (['ok', 'okay', 'vale', 'listo', 'de acuerdo', 'entendido'].includes(norm)) {
-        resp = 'Ok, ¿en qué más te ayudo?'
-      } else {
-        resp = 'Claro, dime de nuevo o pregúntame por un producto (nombre o SKU) y te ayudo. 😊'
-      }
-      console.log(`[WooCommerce] ⚠️ Pre-clasificación: conversacional → respuesta de cierre`)
-      return createResponse(resp, session.state, null, cart)
-    }
-
+    
     // Puerta dura de genéricos: sin SKU/ID explícito, si el mensaje es puramente genérico → respuesta de ayuda, sin OpenAI ni WooCommerce
     if (!providedExplicitSku && !providedExplicitId) {
       const normGeneric = normalizeForGenericGate(message)
       if (normGeneric.length > 0 && GENERIC_PHRASES_SET.has(normGeneric)) {
         console.log(`[WooCommerce] ⚠️ Mensaje genérico (puerta dura) → respuesta de ayuda sin OpenAI/WP`)
-        let genericMessage
-        if (QUE_VENDEN_PHRASES_SET.has(normGeneric)) {
-          const rubros = companyInfoService.getCompanyInfo().rubros || []
-          const lista = rubros.length ? rubros.map(r => `- ${r}`).join('\n') : '- Pesca y caza deportiva\n- Trofeos y premiación\n- Artículos publicitarios\n- Grabado personalizado'
-          genericMessage = `¡Hola! 👋 En Imblasco contamos con varias categorías de productos:\n\n${lista}\n\nSi necesitas más detalles sobre algún producto específico, no dudes en preguntar. 😊`
-        } else {
-          genericMessage = '¡Hola! ¿En qué puedo ayudarte? Puedes preguntarme por un producto (nombre o SKU), stock, precios, o información de la empresa.'
-        }
-        return createResponse(genericMessage, session.state, null, cart)
+        return createResponse(
+          '¡Hola! ¿En qué puedo ayudarte? Puedes preguntarme por un producto (nombre o SKU), stock, precios, o información de la empresa.',
+          session.state,
+          null,
+          cart
+        )
       }
     }
     
@@ -1829,13 +1889,6 @@ export async function processMessageWithAI(userId, message, options = {}) {
         }
         
         console.log(`[WooCommerce] 🤖 OpenAI decidió: tipo=${queryType}, término=${analisisOpenAI.terminoProducto || 'N/A'}, SKU=${analisisOpenAI.sku || 'N/A'}, ID=${analisisOpenAI.id || 'N/A'}, necesitaMásInfo=${analisisOpenAI.necesitaMasInfo}`)
-
-        // Post-clasificación: si la IA marcó PRODUCTO pero el mensaje pide datos de contacto de la empresa → INFORMACION_GENERAL
-        if (queryType === 'PRODUCTOS' && isPreguntaContactoEmpresa(message)) {
-          queryType = 'INFORMACION_GENERAL'
-          if (analisisOpenAI) analisisOpenAI.tipo = 'INFORMACION_GENERAL'
-          console.log(`[WooCommerce] 🔄 Post-clasificación: mensaje pide contacto empresa → INFORMACION_GENERAL`)
-        }
         
         // No usar SKU/ID del contexto si el mensaje actual NO los menciona (evita "bamboo" → responder con Llavero anterior)
         const msgNorm = (typeof message === 'string' ? message : '').trim().toLowerCase()
@@ -1852,21 +1905,6 @@ export async function processMessageWithAI(userId, message, options = {}) {
             analisisOpenAI.id = null
             console.log(`[WooCommerce] ⚠️ ID "${idStr}" no está en el mensaje; ignorando`)
           }
-        }
-
-        // Fase 5: mensaje solo "cuánto cuesta" / "cuál es el precio" sin producto en el texto → no usar contexto a menos que ya haya producto elegido
-        // Si hay producto en contexto (ej. usuario acaba de elegir "el 2"), sí usar contexto; si no hay contexto, pedir producto/SKU para no asumir uno equivocado
-        const tieneProductoEnContexto = !!(session.currentProduct || context.currentProduct)
-        if (queryType === 'PRODUCTOS' && isPreguntaSoloPrecio(message) && !providedExplicitSku && !providedExplicitId && !tieneProductoEnContexto) {
-          queryType = 'AMBIGUA'
-          if (analisisOpenAI) {
-            analisisOpenAI.tipo = 'AMBIGUA'
-            analisisOpenAI.terminoProducto = null
-            analisisOpenAI.sku = null
-            analisisOpenAI.id = null
-            analisisOpenAI.necesitaMasInfo = true
-          }
-          console.log(`[WooCommerce] 🔄 Pregunta solo precio sin producto en mensaje ni en contexto → AMBIGUA (pedir nombre/SKU)`)
         }
         
         // Si OpenAI detectó SKU/ID que el regex no detectó, usarlo (ya validado contra el mensaje)
@@ -2005,7 +2043,7 @@ export async function processMessageWithAI(userId, message, options = {}) {
     if (queryType === 'FALLBACK') {
       const contacto = companyInfoService.getCompanyInfo().contacto
       const lineaContacto = `Puedes escribir a ${contacto.email} o llamar al ${contacto.telefono}.`
-      let fallbackMessage = `Para esa consulta te recomiendo contactar a un ejecutivo: ${lineaContacto}`
+      let fallbackMessage = `Para esa consulta: ${lineaContacto}`
       if (analisisOpenAI?.tipoFallback) {
         console.log(`[WooCommerce] ⚠️ Consulta de fallback detectada: ${analisisOpenAI.tipoFallback}`)
         switch (analisisOpenAI.tipoFallback) {
@@ -2022,10 +2060,10 @@ export async function processMessageWithAI(userId, message, options = {}) {
             fallbackMessage = `No tenemos acceso al estado de tu pedido desde aquí. Para consultar envíos o seguimiento: ${lineaContacto}`
             break
           default:
-            fallbackMessage = `Para esa consulta te recomiendo contactar a un ejecutivo: ${lineaContacto}`
+            fallbackMessage = `Para esa consulta: ${lineaContacto}`
         }
       } else {
-        console.log('[WooCommerce] Consulta de fallback sin tipoFallback, usando mensaje neutro con contacto')
+        console.log('[WooCommerce] Consulta de fallback sin tipoFallback, usando mensaje genérico con contacto')
       }
       return createResponse(
         fallbackMessage,
@@ -2702,11 +2740,22 @@ export async function processMessageWithAI(userId, message, options = {}) {
             
             let rawDetectedSku = null
             let normalizedDetectedSkuForName = null
+            // Evitar confundir separador de medidas (ej. "17 cms. X 7 cms. X 2,8") con SKU
+            const looksLikeDimensions = /\d+[,.]?\d*\s*[xX×]\s*\d+[,.]?\d*/.test(cleanMessage) ||
+              /cms?\.?|medidas?|dimensiones?|mm\b|metros?/i.test(cleanMessage)
+            const isLikelyDimensionSeparator = (raw) => {
+              if (!raw || typeof raw !== 'string') return false
+              const t = raw.trim()
+              return /^[xX]\s*\d{1,2}$/.test(t) || /^[xX][-.\s]?\d{1,2}$/.test(t)
+            }
             // Intentar cada patrón hasta encontrar un SKU
             for (const pattern of skuPatterns) {
               const skuMatch = cleanMessage.match(pattern)
               if (skuMatch) {
                 rawDetectedSku = skuMatch[1].trim()
+                if (looksLikeDimensions && isLikelyDimensionSeparator(rawDetectedSku)) {
+                  continue // "X 7" en "17 cms. X 7 cms." no es SKU
+                }
                 // Normalizar el SKU detectado (N-35 → N35, S.10 → S10, etc.)
                 normalizedDetectedSkuForName = normalizeCode(rawDetectedSku)
                 detectedSkuFromName = normalizedDetectedSkuForName
@@ -3155,7 +3204,23 @@ export async function processMessageWithAI(userId, message, options = {}) {
       } // Cierra el else de "si ya tenemos producto del contexto, omitir búsquedas"
       
       // Verificar resultados finales (usar context para asegurar que tenemos los valores actualizados)
-      const finalSearchResults = context.productSearchResults || productSearchResults || []
+      let rawResults = context.productSearchResults || productSearchResults || []
+      if (isMeasureQuery(message) && rawResults.length > 0) {
+        const userDims = extractDimensionsFromMessage(message)
+        if (userDims) {
+          const filtered = rawResults.filter(p => {
+            const productDims = parseProductDimensions(p.dimensions)
+            return productDims && dimensionsMatch(userDims, productDims)
+          })
+          if (filtered.length !== rawResults.length) {
+            console.log(`[WooCommerce] 📐 Filtro por medidas: ${rawResults.length} → ${filtered.length} candidatos (medidas usuario: ${userDims.map(n => n.toFixed(1)).join('×')} cm)`)
+            rawResults = filtered
+            context.productSearchResults = filtered
+            productSearchResults = filtered
+          }
+        }
+      }
+      const finalSearchResults = rawResults
       // Un solo resultado: afirmar producto y fijar contexto (no pedir confirmación). RECOMENDACION siempre muestra lista (aunque sea de 1).
       if (!productStockData && finalSearchResults.length === 1 && queryType !== 'RECOMENDACION') {
         productStockData = await ensureProductEnriched(finalSearchResults[0])
@@ -4190,6 +4255,28 @@ ${descripcionParaDetalles}`
           const instruccionDetalles = (descripcionParaDetalles || bloqueAtributosCategorias || (pideMasDetalles && hasStockfDetail))
             ? '\n- El cliente pidió MÁS DETALLES del producto. Incluye en tu respuesta: (1) resumen o puntos de la descripción si aparece arriba; (2) atributos o categorías si aparecen; (3) CRÍTICO: si en la información del producto aparecen líneas de Próxima llegada, Especificaciones o Información adicional / personalización (datos STOCKF), DEBES incluirlas en tu respuesta para que el cliente vea el detalle enriquecido. No inventes nada que no esté en la información proporcionada.'
             : ''
+          // Cuando el cliente pide SOLO características/especificaciones/descripción: no repetir confirmación + SKU + stock + precio (evitar redundancia con la ficha del producto)
+          const pideSoloCaracteristicas = pideMasDetalles && (descripcionParaDetalles || bloqueAtributosCategorias || hasStockfDetail) &&
+            /\b(caracter[ií]sticas|especificaciones|descripci[oó]n|dame\s+las\s+caracter[ií]sticas|qu[eé]\s+caracter[ií]sticas)\b/i.test((message || '').trim()) &&
+            !/\b(precio|stock|cu[aá]nto\s+cuesta|cu[aá]ntas?\s+unidades)\b/i.test((message || '').trim())
+          if (pideSoloCaracteristicas) {
+            textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
+
+INFORMACIÓN REAL DEL PRODUCTO (consultada desde WooCommerce en tiempo real):
+- Nombre del producto: ${productStockData.name}
+${productStockData.sku ? `- SKU: ${productStockData.sku}` : ''}
+- Stock: ${stockInfo}
+- Precio: ${priceInfo}${parentInfo}${variationsInfo}${extraProductInfo ? '\n' + extraProductInfo : ''}${formatStockfBlockForPrompt(productStockData)}${bloqueDescripcion}${bloqueExtraDetalles}
+
+El cliente preguntó: "${message}"${historyContext}
+
+INSTRUCCIONES OBLIGATORIAS - SOLO CARACTERÍSTICAS:
+- El cliente pidió SOLO las características, especificaciones o descripción del producto.
+- Responde ÚNICAMENTE con: (1) Una frase breve de introducción, por ejemplo "Sí, estas son las características del ${productStockData.name}:" o "Estas son las características del ${productStockData.name}:". (2) La lista de características, descripción o especificaciones que aparecen en la información del producto arriba (descripción, atributos, datos STOCKF si existen).
+- NO repitas en el texto: confirmación de disponibilidad ("Sí, tenemos el X disponible"), ni SKU, ni stock, ni precio. Esa información ya la ve el cliente en la ficha del producto debajo del mensaje.
+- Cierre breve: "¿Te gustaría saber algo más? 😊" o similar.
+- Tono cercano, estilo WhatsApp. No inventes datos que no estén arriba.`
+          } else {
           textoParaIA = `Redacta una respuesta clara y profesional en español chileno para el cliente.
 
 INFORMACIÓN REAL DEL PRODUCTO (consultada desde WooCommerce en tiempo real):
@@ -4232,6 +4319,7 @@ IMPORTANTE:
 - NO inventes información que no esté arriba
 - NO cambies nombres, SKUs, precios ni stock - usa EXACTAMENTE los valores proporcionados
 - NO menciones "producto padre", "SKU padre" ni "SKU hijo"${instruccionDetalles}`
+          }
         }
         
       } else if ((productSearchResults && productSearchResults.length > 0) || (context.productSearchResults && context.productSearchResults.length > 0)) {

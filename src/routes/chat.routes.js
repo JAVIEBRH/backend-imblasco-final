@@ -9,6 +9,7 @@ const MESSAGE_TIMEOUT_MS = 120000
 import { Router } from 'express'
 import * as conversationService from '../services/conversation.service.js'
 import { handleChat } from '../services/assistant.service.js'
+import * as proofChatService from '../services/proof-chat.service.js'
 import { saveChatMessage } from '../services/chat-logger.service.js'
 import { resolveChatAuth } from '../middleware/chat-auth.js'
 import { chatRateLimit } from '../middleware/chat-rate-limit.js'
@@ -69,6 +70,56 @@ chatRouter.post('/', async (req, res, next) => {
   } catch (error) {
     console.error('[CHAT] Error en /api/chat:', error?.message || error)
     next(error)
+  }
+})
+
+/**
+ * POST /api/chat/proof
+ * Chat PROOF: Responses API + Vector Store (file_search) + consultar_productos + contar_productos.
+ * Solo rama PROOF. Body: { session_id, message }
+ */
+chatRouter.post('/proof', async (req, res, next) => {
+  try {
+    const { session_id, message } = req.body
+    console.log(`[CHAT] /api/chat/proof session_id=${session_id} message="${(message || '').slice(0, 120)}"`)
+
+    if (!session_id || typeof session_id !== 'string' || session_id.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'session_id debe ser un string no vacío'
+      })
+    }
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'message debe ser un string no vacío'
+      })
+    }
+
+    const sessionId = session_id.trim()
+    res.setTimeout(MESSAGE_TIMEOUT_MS, () => {
+      if (!res.headersSent) {
+        res.status(504).json({
+          success: false,
+          error: true,
+          response: '⚠️ La respuesta está tardando demasiado. Por favor, intenta de nuevo.'
+        })
+      }
+    })
+
+    const result = await proofChatService.processMessage(sessionId, message.trim())
+    res.json({
+      success: true,
+      response: result.response,
+      session_id: result.session_id
+    })
+  } catch (error) {
+    console.error('[CHAT] Error en /api/chat/proof:', error?.message || error)
+    res.status(500).json({
+      success: false,
+      error: true,
+      response: '⚠️ Error en el servidor. Por favor, intenta de nuevo en un momento.'
+    })
   }
 })
 
