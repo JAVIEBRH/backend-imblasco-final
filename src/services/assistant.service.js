@@ -13,6 +13,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import OpenAI from 'openai';
+import { getOpenAIConfig } from '../config/openai.js';
 import ProductIndex from '../models/ProductIndex.js';
 import Conversation from '../models/Conversation.js';
 
@@ -32,12 +33,15 @@ function getSystemPrompt() {
 }
 
 function getOpenAIClient() {
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  const { apiKey, baseURL } = getOpenAIConfig();
   if (!apiKey) {
     throw new Error('OPENAI_API_KEY no definida en variables de entorno');
   }
   if (!openaiClient) {
-    openaiClient = new OpenAI({ apiKey });
+    openaiClient = new OpenAI({
+      apiKey,
+      ...(baseURL && { baseURL })
+    });
   }
   return openaiClient;
 }
@@ -667,7 +671,7 @@ export async function handleChat({ session_id, message }) {
   }
 
   const firstResponse = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
+    model: getOpenAIConfig().model,
     messages,
     tools,
     tool_choice: 'auto'
@@ -737,7 +741,7 @@ export async function handleChat({ session_id, message }) {
       console.log('[ASSISTANT] Respuesta formateada (busqueda)');
     } else {
       const secondResponse = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model: getOpenAIConfig().model,
         messages: [
           ...messages,
           assistantMessage,

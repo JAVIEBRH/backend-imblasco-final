@@ -87,6 +87,7 @@ import { clientRouter } from "./routes/client.routes.js";
 import { testConnection, connect } from "./config/database.js";
 import { getStockfConnectionReady } from "./config/stockf-database.js";
 import { errorHandler, notFound } from "./middleware/errorHandler.js";
+import { getOpenAIConfig } from "./config/openai.js";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -97,6 +98,7 @@ app.use(
     origin: [
       "http://localhost:3000",
       "http://localhost:5173",
+      "http://localhost:5174", // frontend PROOF
       "http://localhost:3002",
       "https://imblascoasistentefrontend.onrender.com",
       "https://frontend-imblasco-final.onrender.com",
@@ -116,24 +118,22 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// Verificación de configuración OpenAI
+// Verificación de configuración OpenAI (usa config centralizada)
 app.get("/api/health/openai", async (req, res) => {
   try {
     const conkavoAI = await import("./services/conkavo-ai.service.js");
     const isConfigured = conkavoAI.isConfigured();
-    const hasApiKey = !!process.env.OPENAI_API_KEY;
+    const { apiKey, model } = getOpenAIConfig();
 
     res.json({
       configured: isConfigured,
-      hasApiKey: hasApiKey,
-      apiKeyLength: process.env.OPENAI_API_KEY
-        ? process.env.OPENAI_API_KEY.length
-        : 0,
-      model: "gpt-4o-mini",
+      hasApiKey: !!apiKey,
+      apiKeyLength: apiKey ? apiKey.length : 0,
+      model,
       api: "chat.completions.create()",
       message: isConfigured
-        ? "✅ OpenAI configurado correctamente (Responses API)"
-        : "❌ OpenAI no está configurado. Verifica OPENAI_API_KEY en .env",
+        ? "✅ OpenAI configurado correctamente (Chat Completions)"
+        : "❌ OpenAI no está configurado. Verifica OPENAI_API_KEY en .env o variables de entorno",
     });
   } catch (error) {
     res.status(500).json({

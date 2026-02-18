@@ -7,6 +7,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node src/scripts/free-port.js 3001 && node --watch server.js",
+    "dev:develop": "node src/scripts/free-port.js 3001 && node --watch server.js",
+    "dev:proof": "node src/scripts/free-port.js 3002 && cross-env PORT=3002 node --watch server.js",
     "migrate": "node src/database/migrate.js",
     "migrate:invoicing": "node src/database/migrate-invoicing.js",
     "migrate:users": "node src/database/migrate-users.js",
@@ -17,7 +19,6 @@
     "scrape": "node src/scripts/scraper.js",
     "serve-scraped": "node src/scripts/serve-scraped.js",
     "test-stock-list": "node src/services/__tests__/conversation-stock-list.test.js",
-    "test:regression": "node src/services/__tests__/regression-critical.test.js",
     "test:regression": "node src/services/__tests__/regression-critical.test.js",
     "revision-chat": "node src/scripts/revision-chat-cuestionario.js"
   },
@@ -35,5 +36,8 @@
     "pg": "^8.11.3",
     "puppeteer": "^24.35.0",
     "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3"
   }
 }

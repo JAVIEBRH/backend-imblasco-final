@@ -9,6 +9,7 @@ const MESSAGE_TIMEOUT_MS = 120000
 import { Router } from 'express'
 import * as conversationService from '../services/conversation.service.js'
 import { handleChat } from '../services/assistant.service.js'
+import { processMessageWithResponsesAPI } from '../services/responses-chat.service.js'
 import { saveChatMessage } from '../services/chat-logger.service.js'
 import { resolveChatAuth } from '../middleware/chat-auth.js'
 import { chatRateLimit } from '../middleware/chat-rate-limit.js'
@@ -227,6 +228,44 @@ chatRouter.post('/reset/:userId', async (req, res, next) => {
       ...response
     })
   } catch (error) {
+    next(error)
+  }
+})
+
+/**
+ * POST /api/chat/responses
+ * Rama PROOF: flujo con OpenAI Responses API (instructions + input + tools).
+ * Tools: file_search (Vector Store), consultar_productos, contar_productos.
+ * Requiere OPENAI_API_KEY y opcionalmente VECTOR_STORE_ID. No mergear a main/develop sin indicación.
+ *
+ * Body: { userId: string, message: string, conversationHistory?: Array }
+ */
+chatRouter.post('/responses', chatRateLimit, async (req, res, next) => {
+  try {
+    const { userId, message, conversationHistory } = req.body
+    if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
+      return res.status(400).json({ success: false, error: 'userId debe ser un string no vacío' })
+    }
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
+      return res.status(400).json({ success: false, error: 'message debe ser un string no vacío' })
+    }
+    res.setTimeout(MESSAGE_TIMEOUT_MS, () => {
+      if (!res.headersSent) {
+        res.status(504).json({
+          success: false,
+          error: true,
+          message: 'Tiempo de espera agotado',
+          botMessage: '⚠️ La respuesta está tardando demasiado. Por favor, intenta de nuevo.'
+        })
+      }
+    })
+    const botMessage = await processMessageWithResponsesAPI(userId, message.trim(), conversationHistory || [])
+    res.json({
+      success: true,
+      botMessage: typeof botMessage === 'string' ? botMessage : String(botMessage)
+    })
+  } catch (error) {
+    console.error('❌ Error en /api/chat/responses:', error?.message || error)
     next(error)
   }
 })

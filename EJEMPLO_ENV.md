@@ -17,6 +17,11 @@ DATABASE_URL=mongodb://localhost:27017/imblasco_b2b
 # ============================================
 OPENAI_API_KEY=sk-proj-tu-openai-api-key-aqui
 
+# Rama PROOF - Responses API (opcionales):
+# OPENAI_MODEL=gpt-4o-mini
+# OPENAI_BASE_URL=https://api.openai.com/v1
+# OPENAI_VECTOR_STORE_ID=vs_xxxx   (o VECTOR_STORE_ID) - ID del Vector Store para file_search
+
 # ============================================
 # WOOCOMMERCE REST API
 # ============================================

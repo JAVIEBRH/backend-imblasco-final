@@ -11,6 +11,7 @@
 import OpenAI from 'openai'
 import { withTimeout, withRetry } from '../utils/resilience.js'
 import { logEvent } from '../utils/structured-logger.js'
+import { getOpenAIConfig, isOpenAIConfigured } from '../config/openai.js'
 
 const OPENAI_TIMEOUT_MS = 60000
 const OPENAI_MAX_RETRIES = 2
@@ -244,14 +245,15 @@ Si hay error técnico:
 
 /**
  * Inicializar cliente OpenAI (una sola vez)
- * Falla explícitamente si no existe OPENAI_API_KEY
+ * Usa config centralizada (config/openai.js) para futura integración con la nueva forma de OpenAI.
+ * Falla explícitamente si no existe OPENAI_API_KEY.
  */
 export function initializeOpenAI() {
   if (openaiClient) {
     return // Ya inicializado
   }
 
-  const apiKey = process.env.OPENAI_API_KEY
+  const { apiKey, baseURL } = getOpenAIConfig()
 
   if (!apiKey) {
     throw new Error('OPENAI_API_KEY no definida en variables de entorno')
@@ -264,11 +266,13 @@ export function initializeOpenAI() {
 
   try {
     openaiClient = new OpenAI({
-      apiKey: apiKey.trim()
+      apiKey: apiKey.trim(),
+      ...(baseURL && { baseURL })
     })
 
     console.log('✅ OpenAI cliente inicializado correctamente')
     console.log(`   API Key: ${apiKey.substring(0, 15)}... (${apiKey.length} caracteres)`)
+    if (baseURL) console.log(`   Base URL: ${baseURL}`)
   } catch (error) {
     console.error('❌ Error al crear cliente OpenAI:', error.message)
     throw error
@@ -453,7 +457,7 @@ Ejemplos CON CONTEXTO DE PRODUCTO:
 Respuesta (SOLO el JSON, sin explicaciones adicionales):`
 
     const response = await openaiCreate(client, {
-      model: 'gpt-4o-mini',
+      model: getOpenAIConfig().model,
       messages: [
         {
           role: 'system',
@@ -617,7 +621,7 @@ Ejemplos:
 Respuesta:`
 
     const response = await openaiCreate(client, {
-      model: 'gpt-4o-mini',
+      model: getOpenAIConfig().model,
       messages: [
         {
           role: 'system',
@@ -670,7 +674,7 @@ El cliente respondió: "${message}"
 Ejemplos: "el primero" → 1, "el 1" → 1, "el rojo" → número de la opción que tiene rojo, "ese" → 1 si suele ser el primero, "el de 990" → índice del que cuesta 990, "ninguno" → 0.
 Respuesta:`
     const response = await openaiCreate(client, {
-      model: 'gpt-4o-mini',
+      model: getOpenAIConfig().model,
       messages: [
         { role: 'system', content: 'Responde solo con un número: índice 1-based del producto o 0.' },
         { role: 'user', content: prompt }
@@ -711,7 +715,7 @@ Mensaje del cliente: "${message}"
 
 Respuesta:`
     const response = await openaiCreate(client, {
-      model: 'gpt-4o-mini',
+      model: getOpenAIConfig().model,
       messages: [
         { role: 'system', content: 'Responde solo con un número: 1-based del producto más probable o 0.' },
         { role: 'user', content: prompt }
@@ -753,7 +757,7 @@ NO es código de producto si: es pregunta genérica ("¿cómo comprar?", "¿cóm
 Responde SOLO: SI o NO
 Respuesta:`
     const response = await openaiCreate(client, {
-      model: 'gpt-4o-mini',
+      model: getOpenAIConfig().model,
       messages: [
         { role: 'system', content: 'Responde solo SI o NO. SI solo si el cliente pide un producto con ese código.' },
         { role: 'user', content: prompt }
@@ -794,7 +798,7 @@ El cliente ahora dice: "${message}"
 Responde SOLO una de estas tres palabras: REPITE_BUSQUEDA, ELIGE_UNO, OTRA_COSA
 Respuesta:`
     const response = await openaiCreate(client, {
-      model: 'gpt-4o-mini',
+      model: getOpenAIConfig().model,
       messages: [
         { role: 'system', content: 'Responde solo: REPITE_BUSQUEDA, ELIGE_UNO o OTRA_COSA.' },
         { role: 'user', content: prompt }
@@ -858,7 +862,7 @@ export async function redactarRespuesta(textoParaRedactar, conversationHistory =
     // Usar Chat Completions API (API estándar de OpenAI)
     const openaiStart = Date.now()
     const response = await openaiCreate(client, {
-      model: 'gpt-4o-mini',
+      model: getOpenAIConfig().model,
       messages: messages,
       temperature: 0.7,
       max_tokens: 400
@@ -925,7 +929,7 @@ export async function redactarRespuestaStream(textoParaRedactar, conversationHis
     messages.push({ role: 'user', content: textoParaRedactar })
 
     const stream = await openaiCreate(client, {
-      model: 'gpt-4o-mini',
+      model: getOpenAIConfig().model,
       messages,
       temperature: 0.7,
       max_tokens: 400,
@@ -948,21 +952,14 @@ export async function redactarRespuestaStream(textoParaRedactar, conversationHis
 }
 
 /**
- * Verificar si el servicio está configurado correctamente
+ * Verificar si el servicio está configurado correctamente (usa config centralizada).
  */
 export function isConfigured() {
   try {
-    if (!process.env.OPENAI_API_KEY) {
-      console.error('❌ OPENAI_API_KEY no encontrada en process.env')
+    if (!isOpenAIConfigured()) {
+      console.error('❌ OPENAI_API_KEY no encontrada o formato inválido en process.env')
       return false
     }
-    
-    const apiKey = process.env.OPENAI_API_KEY.trim()
-    if (!apiKey.startsWith('sk-')) {
-      console.error('❌ OPENAI_API_KEY tiene formato inválido')
-      return false
-    }
-    
     if (!openaiClient) {
       initializeOpenAI()
     }
